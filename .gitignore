@@ -221,3 +221,8 @@ __marimo__/
 
 assets
 sources
+
+# AI Tender runtime
+data/
+.env
+.streamlit/secrets.toml

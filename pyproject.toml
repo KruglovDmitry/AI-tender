@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-tender"
+version = "0.1.0"
+description = "Гибридное сопоставление требований тендера с эталонной документацией"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy",
+  "openai",
+  "openpyxl",
+  "pydantic>=2",
+  "pydantic-settings",
+  "pymupdf",
+  "python-docx",
+  "python-dotenv",
+  "sentence-transformers",
+  "streamlit",
+  "typer",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+ai-tender = "ai_tender.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_tender"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
