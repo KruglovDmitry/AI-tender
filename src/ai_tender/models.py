@@ -1,53 +1,42 @@
 from enum import StrEnum
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-class Block(BaseModel):
-    id: str
-    file: str
-    location: str
-    kind: str
-    text: str
-
-
-class Requirement(BaseModel):
-    id: str = ""
-    text: str
-    category: str = "прочее"
-    parameter: str | None = None
-    operator: str | None = None
-    value: str | float | int | None = None
-    unit: str | None = None
-    mandatory: bool = True
-    source_block_id: str
-    source_file: str
-    source_location: str
-
-
-class Status(StrEnum):
-    compliant = "compliant"
-    non_compliant = "non_compliant"
-    partial = "partial"
-    insufficient_evidence = "insufficient_evidence"
-    not_applicable = "not_applicable"
+load_dotenv()
 
 
 class Evidence(BaseModel):
     file: str
     location: str
     quote: str
-    block_id: str
+    score: float | None = None
 
 
-class Comparison(BaseModel):
-    requirement: Requirement
-    status: Status
-    explanation: str
-    reference_value: str | None = None
-    confidence: float = Field(ge=0, le=1)
-    evidence: list[Evidence] = Field(default_factory=list)
+class Status(StrEnum):
+    found = "found"
+    partial = "partial"
+    not_found = "not_found"
+    uncertain = "uncertain"
+
+
+STATUS_LABELS = {
+    Status.found.value: "Найдено вхождение",
+    Status.partial.value: "Частичное совпадение",
+    Status.not_found.value: "Не найдено",
+    Status.uncertain.value: "Недостаточно данных",
+}
+
+
+class Finding(BaseModel):
+    query_text: str
+    asset: Evidence
+    tender_hits: list[Evidence] = Field(default_factory=list)
+    status: Status = Status.uncertain
+    explanation: str = ""
+    confidence: float = Field(default=0.0, ge=0, le=1)
 
 
 class AnalysisReport(BaseModel):
@@ -55,7 +44,38 @@ class AnalysisReport(BaseModel):
 
     tender_path: str
     assets_path: str
-    model: str
-    comparisons: list[Comparison]
+    embedding_model: str
+    llm_model: str
+    summary: str = ""
+    findings: list[Finding] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    index_reused: bool = False
     report_dir: Path | None = None
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_prefix="AI_TENDER_", extra="ignore"
+    )
+
+    # Embeddings (локально) + LLM (API)
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_device: str | None = None
+    llm_provider: str = "deepseek"  # deepseek | openai
+    llm_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com"
+    openai_base_url: str = "https://api.openai.com/v1"
+
+    # Retrieval
+    top_k: int = 5
+    chunk_size: int = 1024
+    chunk_overlap: int = 128
+    max_asset_queries: int = 40
+    min_retrieval_score: float = 0.35
+
+    cache_dir: Path = Path("data/cache")
+    output_dir: Path = Path("data/reports")
+
+
+def get_settings() -> Settings:
+    return Settings()

@@ -5,28 +5,29 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-tender"
 version = "0.1.0"
-description = "Гибридное сопоставление требований тендера с эталонной документацией"
+description = "LlamaIndex RAG: вхождения эталонных ТС в тендер и оценка LLM"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "llama-index",
+  "llama-index-embeddings-huggingface",
+  "llama-index-llms-openai",
+  "llama-index-llms-openai-like",
+  "llama-index-readers-file",
+  "llama-index-retrievers-bm25",
+  "docx2txt",
   "numpy",
-  "openai",
-  "openpyxl",
+  "pandas",
   "pydantic>=2",
   "pydantic-settings",
-  "pymupdf",
-  "python-docx",
   "python-dotenv",
+  "rarfile",
   "sentence-transformers",
   "streamlit",
-  "typer",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
-
-[project.scripts]
-ai-tender = "ai_tender.cli:app"
+dev = ["pytest", "ruff", "python-docx"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_tender"]

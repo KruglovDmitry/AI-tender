@@ -1,13 +1,15 @@
-import os
-from collections.abc import Callable
+﻿from collections.abc import Callable
 from pathlib import Path
 
-from .config import Settings, get_settings
-from .ingestion import extract_folder
-from .llm import compare_requirement, extract_requirements
-from .models import AnalysisReport
-from .providers import DeepSeekProvider, LocalBGEProvider
-
+from .index import (
+    build_tender_index,
+    load_or_build_assets_index,
+    node_to_evidence,
+    retrieve_candidates,
+    select_asset_query_nodes,
+)
+from .models import AnalysisReport, Settings, get_settings
+from .providers import assess_findings, build_llm
 
 ProgressCallback = Callable[[str, float], None]
 
@@ -15,61 +17,54 @@ ProgressCallback = Callable[[str, float], None]
 def analyze(
     tender_path: Path,
     assets_path: Path,
-    api_key: str | None = None,
     settings: Settings | None = None,
     progress: ProgressCallback | None = None,
 ) -> AnalysisReport:
     settings = settings or get_settings()
-    api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
-    if not api_key:
-        raise ValueError("Не указан DEEPSEEK_API_KEY")
-    llm = DeepSeekProvider(api_key, settings.model, settings.deepseek_base_url)
 
     def update(message: str, value: float) -> None:
         if progress:
             progress(message, value)
 
-    update("Чтение закупочной документации", 0.05)
-    tender_blocks, tender_warnings = extract_folder(tender_path, technical_only=True)
-    update("Чтение эталонной документации", 0.15)
-    asset_blocks, asset_warnings = extract_folder(assets_path)
-    if not tender_blocks:
-        raise ValueError("Не удалось извлечь текст из тендерной документации")
-    if not asset_blocks:
-        raise ValueError("Не удалось извлечь текст из эталонной документации")
-
-    update("Извлечение атомарных требований", 0.25)
-    requirements = extract_requirements(
-        llm,
-        tender_blocks,
-        settings.max_requirements,
-        lambda message: update(message, 0.3),
+    update("Загрузка и подготовка индекса эталонов", 0.1)
+    _, asset_nodes, asset_warnings, index_reused = load_or_build_assets_index(
+        assets_path,
+        settings.cache_dir,
+        settings.embedding_model,
+        settings.chunk_size,
+        settings.chunk_overlap,
+        settings.embedding_device,
     )
-    if not requirements:
-        raise ValueError("Модель не нашла технических требований")
 
-    update("Загрузка локальной embedding-модели и построение индекса", 0.4)
-    embeddings = LocalBGEProvider(settings.embedding_model, settings.embedding_device)
-    asset_vectors = embeddings.embed([block.text for block in asset_blocks])
-    requirement_vectors = embeddings.embed([requirement.text for requirement in requirements])
+    update("Индексация тендерной документации", 0.35)
+    tender_index, _, tender_warnings = build_tender_index(
+        tender_path,
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+    )
 
-    comparisons = []
-    for index, requirement in enumerate(requirements):
-        score = asset_vectors @ requirement_vectors[index]
-        candidate_indices = score.argsort()[-settings.top_k :][::-1]
-        candidates = [asset_blocks[int(item)] for item in candidate_indices]
-        progress_value = 0.5 + (0.45 * (index + 1) / len(requirements))
-        update(
-            f"Сопоставление {index + 1} из {len(requirements)}: {requirement.category}",
-            progress_value,
-        )
-        comparisons.append(compare_requirement(llm, requirement, candidates))
+    update("Поиск вхождений эталона в тендер (hybrid retrieval)", 0.6)
+    query_nodes = select_asset_query_nodes(asset_nodes, settings.max_asset_queries)
+    candidates = retrieve_candidates(
+        query_nodes,
+        tender_index,
+        top_k=settings.top_k,
+        min_score=settings.min_retrieval_score,
+    )
 
-    update("Подготовка отчёта", 0.98)
+    update("Оценка соответствия через LLM", 0.85)
+    llm = build_llm(settings)
+    summary, findings = assess_findings(llm, candidates, node_to_evidence)
+
+    update("Сбор результата", 0.98)
     return AnalysisReport(
         tender_path=str(tender_path.resolve()),
         assets_path=str(assets_path.resolve()),
-        model=settings.model,
-        comparisons=comparisons,
-        warnings=tender_warnings + asset_warnings,
+        embedding_model=settings.embedding_model,
+        llm_model=settings.llm_model,
+        summary=summary,
+        findings=findings,
+        warnings=asset_warnings + tender_warnings,
+        index_reused=index_reused,
     )
+
