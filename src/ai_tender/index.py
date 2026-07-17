@@ -1,4 +1,4 @@
-"""LlamaIndex индекс эталонов (с дисковым кэшем) и гибридный поиск по тендеру."""
+"""LlamaIndex индекс эталонов (с дисковым кэшем) и гибридный поиск."""
 
 from __future__ import annotations
 
@@ -14,10 +14,25 @@ from llama_index.retrievers.bm25 import BM25Retriever
 from .loaders import load_documents, split_documents
 
 
-def configure_embeddings(model_name: str, device: str | None = None) -> HuggingFaceEmbedding:
-    kwargs = {"model_name": model_name, "embed_batch_size": 8}
+def _resolve_device(device: str | None) -> str | None:
     if device:
-        kwargs["device"] = device
+        return device
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return None
+
+
+def configure_embeddings(model_name: str, device: str | None = None) -> HuggingFaceEmbedding:
+    # batch 8 на CPU очень медленный для ~1000 чанков; 32 заметно быстрее.
+    kwargs: dict = {"model_name": model_name, "embed_batch_size": 32}
+    resolved = _resolve_device(device)
+    if resolved:
+        kwargs["device"] = resolved
     embed_model = HuggingFaceEmbedding(**kwargs)
     Settings.embed_model = embed_model
     return embed_model
@@ -60,15 +75,23 @@ def build_index_from_folder(
     chunk_size: int,
     chunk_overlap: int,
     technical_only: bool = False,
+    ocr_enabled: bool = True,
+    ocr_languages: str = "rus+eng",
 ) -> tuple[VectorStoreIndex, list[BaseNode], list[str]]:
-    documents, warnings = load_documents(folder, corpus=corpus, technical_only=technical_only)
+    documents, warnings = load_documents(
+        folder,
+        corpus=corpus,
+        technical_only=technical_only,
+        ocr_enabled=ocr_enabled,
+        ocr_languages=ocr_languages,
+    )
     if not documents:
         details = "; ".join(warnings) if warnings else "файлы не найдены или пусты"
         raise ValueError(f"Не удалось извлечь документы из {folder}. {details}")
     nodes = split_documents(documents, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     if not nodes:
         raise ValueError(f"После разбиения на чанки документов нет: {folder}")
-    index = VectorStoreIndex(nodes)
+    index = VectorStoreIndex(nodes, show_progress=True)
     return index, nodes, warnings
 
 
@@ -79,6 +102,8 @@ def load_or_build_assets_index(
     chunk_size: int,
     chunk_overlap: int,
     device: str | None = None,
+    ocr_enabled: bool = True,
+    ocr_languages: str = "rus+eng",
 ) -> tuple[VectorStoreIndex, list[BaseNode], list[str], bool]:
     configure_embeddings(embedding_model, device)
     key = cache_key(assets_path, embedding_model, chunk_size, chunk_overlap)
@@ -103,6 +128,8 @@ def load_or_build_assets_index(
         corpus="assets",
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        ocr_enabled=ocr_enabled,
+        ocr_languages=ocr_languages,
     )
     entry_dir.mkdir(parents=True, exist_ok=True)
     index.storage_context.persist(persist_dir=str(entry_dir))
@@ -115,6 +142,13 @@ def load_or_build_assets_index(
                 "folder_fingerprint": folder_fingerprint(assets_path),
                 "assets_path": str(assets_path.resolve()),
                 "node_count": len(nodes),
+                "indexed_files": sorted(
+                    {
+                        str(node.metadata.get("file_path") or node.metadata.get("file_name"))
+                        for node in nodes
+                        if node.metadata
+                    }
+                ),
                 "warnings": warnings,
             },
             ensure_ascii=False,
@@ -125,18 +159,28 @@ def load_or_build_assets_index(
     return index, nodes, warnings, False
 
 
-def build_tender_index(
+def load_tender_nodes(
     tender_path: Path,
     chunk_size: int,
     chunk_overlap: int,
-) -> tuple[VectorStoreIndex, list[BaseNode], list[str]]:
-    return build_index_from_folder(
+    ocr_enabled: bool = True,
+    ocr_languages: str = "rus+eng",
+) -> tuple[list[BaseNode], list[str]]:
+    """Тендер только как источник запросов — векторный индекс не нужен."""
+    documents, warnings = load_documents(
         tender_path,
         corpus="tender",
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
         technical_only=True,
+        ocr_enabled=ocr_enabled,
+        ocr_languages=ocr_languages,
     )
+    if not documents:
+        details = "; ".join(warnings) if warnings else "файлы не найдены или пусты"
+        raise ValueError(f"Не удалось извлечь документы из {tender_path}. {details}")
+    nodes = split_documents(documents, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    if not nodes:
+        raise ValueError(f"После разбиения на чанки документов нет: {tender_path}")
+    return nodes, warnings
 
 
 def _rrf_fuse(
@@ -162,35 +206,51 @@ def _rrf_fuse(
     return output
 
 
-def hybrid_retrieve(index: VectorStoreIndex, query: str, top_k: int) -> list[NodeWithScore]:
-    vector_retriever = index.as_retriever(similarity_top_k=top_k)
+def build_bm25_retriever(index: VectorStoreIndex, top_k: int) -> BM25Retriever:
     try:
-        bm25_retriever = BM25Retriever.from_defaults(
+        return BM25Retriever.from_defaults(
             docstore=index.docstore,
             similarity_top_k=top_k,
             language="russian",
         )
     except Exception:
-        bm25_retriever = BM25Retriever.from_defaults(
+        return BM25Retriever.from_defaults(
             docstore=index.docstore,
             similarity_top_k=top_k,
         )
+
+
+def hybrid_retrieve(
+    index: VectorStoreIndex,
+    query: str,
+    top_k: int,
+    bm25_retriever: BM25Retriever | None = None,
+) -> list[NodeWithScore]:
+    vector_retriever = index.as_retriever(similarity_top_k=top_k)
+    bm25 = bm25_retriever or build_bm25_retriever(index, top_k)
     vector_hits = vector_retriever.retrieve(query)
-    bm25_hits = bm25_retriever.retrieve(query)
+    bm25_hits = bm25.retrieve(query)
     return _rrf_fuse([vector_hits, bm25_hits], top_k=top_k)
 
 
-def select_asset_query_nodes(nodes: list[BaseNode], limit: int) -> list[BaseNode]:
-    """Берём равномерно распределённые чанки эталона как поисковые запросы."""
+def select_query_nodes(nodes: list[BaseNode], limit: int) -> list[BaseNode]:
+    """Равномерно выбираем чанки как поисковые запросы."""
     if not nodes:
         return []
-    if len(nodes) <= limit:
-        return list(nodes)
-    step = len(nodes) / limit
-    selected = []
-    for index in range(limit):
-        selected.append(nodes[int(index * step)])
-    return selected
+    substantive = [
+        node
+        for node in nodes
+        if len(" ".join(node.get_content(metadata_mode="none").split())) >= 40
+    ]
+    pool = substantive or list(nodes)
+    if len(pool) <= limit:
+        return list(pool)
+    step = len(pool) / limit
+    return [pool[int(index * step)] for index in range(limit)]
+
+
+# Обратная совместимость для тестов/импортов.
+select_asset_query_nodes = select_query_nodes
 
 
 def node_to_evidence(node: BaseNode, score: float | None = None):
@@ -209,21 +269,32 @@ def node_to_evidence(node: BaseNode, score: float | None = None):
     )
 
 
+def indexed_file_paths(nodes: list[BaseNode]) -> list[str]:
+    files = {
+        str(node.metadata.get("file_path") or node.metadata.get("file_name"))
+        for node in nodes
+        if node.metadata
+    }
+    return sorted(path for path in files if path and path != "None")
+
+
 def retrieve_candidates(
-    asset_nodes: list[BaseNode],
-    tender_index: VectorStoreIndex,
+    query_nodes: list[BaseNode],
+    search_index: VectorStoreIndex,
     top_k: int,
-    min_score: float,
+    min_score: float = 0.0,
 ) -> list[tuple[BaseNode, list[NodeWithScore]]]:
+    """Для каждого запроса (обычно чанк тендера) ищем хиты в индексе эталонов."""
+    del min_score  # RRF-score мал; отсечение по абсолютному порогу вводит в заблуждение
+    bm25 = build_bm25_retriever(search_index, top_k)
+    vector_retriever = search_index.as_retriever(similarity_top_k=top_k)
     results: list[tuple[BaseNode, list[NodeWithScore]]] = []
-    for asset_node in asset_nodes:
-        query = asset_node.get_content(metadata_mode="none")
-        # короткий запрос лучше для BM25 по моделям/артикулам
+    for query_node in query_nodes:
+        query = query_node.get_content(metadata_mode="none")
         query = " ".join(query.split())[:800]
-        hits = hybrid_retrieve(tender_index, query, top_k=top_k)
-        filtered = [hit for hit in hits if (hit.score or 0) >= min_score or hit.score is None]
-        if not filtered:
-            filtered = hits[:top_k]
-        if filtered:
-            results.append((asset_node, filtered))
+        vector_hits = vector_retriever.retrieve(query)
+        bm25_hits = bm25.retrieve(query)
+        hits = _rrf_fuse([vector_hits, bm25_hits], top_k=top_k)
+        if hits:
+            results.append((query_node, hits[:top_k]))
     return results

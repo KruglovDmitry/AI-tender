@@ -23,17 +23,32 @@ class Status(StrEnum):
 
 
 STATUS_LABELS = {
-    Status.found.value: "Найдено вхождение",
-    Status.partial.value: "Частичное совпадение",
-    Status.not_found.value: "Не найдено",
+    Status.found.value: "Применимо",
+    Status.partial.value: "Частично применимо",
+    Status.not_found.value: "Не применимо",
     Status.uncertain.value: "Недостаточно данных",
 }
+
+STATUS_PRIORITY = {
+    Status.found: 0,
+    Status.partial: 1,
+    Status.uncertain: 2,
+    Status.not_found: 3,
+}
+
+DEFAULT_USER_INSTRUCTION = (
+    "Эталон — подробное техническое описание изготавливаемой продукции. "
+    "Тендер задаёт обобщённые требования к закупке (без привязки к поставщику). "
+    "Для каждого требования из тендера оцени, подтверждают ли цитаты эталона "
+    "применимость продукции к этому требованию по смыслу, а не только дословно. "
+    "Указывай конкретные ТС/модели из эталона, если они явно названы в цитатах."
+)
 
 
 class Finding(BaseModel):
     query_text: str
-    asset: Evidence
-    tender_hits: list[Evidence] = Field(default_factory=list)
+    tender: Evidence
+    asset_hits: list[Evidence] = Field(default_factory=list)
     status: Status = Status.uncertain
     explanation: str = ""
     confidence: float = Field(default=0.0, ge=0, le=1)
@@ -49,6 +64,7 @@ class AnalysisReport(BaseModel):
     summary: str = ""
     findings: list[Finding] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    indexed_files: list[str] = Field(default_factory=list)
     index_reused: bool = False
     report_dir: Path | None = None
 
@@ -66,12 +82,20 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_base_url: str = "https://api.openai.com/v1"
 
-    # Retrieval
-    top_k: int = 5
+    # Retrieval: запросы из тендера → поиск по эталонам
+    top_k: int = 3
     chunk_size: int = 1024
     chunk_overlap: int = 128
-    max_asset_queries: int = 40
-    min_retrieval_score: float = 0.35
+    max_tender_queries: int = 15
+    max_findings: int = 12
+    min_retrieval_score: float = 0.0
+
+    # LLM prompt prefix (задача оценки)
+    user_instruction: str = DEFAULT_USER_INSTRUCTION
+
+    # OCR для PDF-сканов
+    ocr_enabled: bool = True
+    ocr_languages: str = "rus+eng"
 
     cache_dir: Path = Path("data/cache")
     output_dir: Path = Path("data/reports")

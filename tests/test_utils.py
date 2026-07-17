@@ -1,10 +1,39 @@
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 
 from ai_tender.loaders import load_documents
-from ai_tender.utils import expand_archives, unpack_zip
+from ai_tender.ocr import ocr_status
+from ai_tender.utils import configure_rarfile, expand_archives, find_unrar_tool, unpack_zip
+
+
+def test_find_unrar_tool_prefers_env(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "unrar.exe"
+    fake.write_bytes(b"stub")
+    monkeypatch.setenv("UNRAR_TOOL", str(fake))
+    assert find_unrar_tool() == fake
+
+
+def test_configure_rarfile_sets_tool(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "UnRAR.exe"
+    fake.write_bytes(b"stub")
+    monkeypatch.setenv("UNRAR_TOOL", str(fake))
+    assert configure_rarfile() == fake
+
+    import rarfile
+
+    assert rarfile.UNRAR_TOOL == str(fake)
+
+
+def test_ocr_status_reports_missing_tesseract(monkeypatch) -> None:
+    monkeypatch.delenv("TESSERACT_CMD", raising=False)
+    monkeypatch.delenv("TESSERACT_PATH", raising=False)
+    with patch("ai_tender.ocr.tesseract_path", return_value=None):
+        ok, message = ocr_status()
+    assert not ok
+    assert "Tesseract" in message
 
 
 def test_load_documents_reads_docx(tmp_path: Path) -> None:

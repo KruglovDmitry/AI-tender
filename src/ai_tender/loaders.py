@@ -1,4 +1,4 @@
-"""Загрузка документов: архивы + LlamaIndex SimpleDirectoryReader."""
+"""Загрузка документов: архивы + LlamaIndex SimpleDirectoryReader + OCR."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 from llama_index.core import Document, SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 
+from .ocr import extract_pdf_with_ocr, ocr_status
 from .utils import ARCHIVES, expand_archives
 
 # Форматы, которые SimpleDirectoryReader читает через llama-index-readers-file.
@@ -27,6 +28,8 @@ def load_documents(
     folder: Path,
     corpus: str,
     technical_only: bool = False,
+    ocr_enabled: bool = True,
+    ocr_languages: str = "rus+eng",
 ) -> tuple[list[Document], list[str]]:
     if not folder.is_dir():
         raise ValueError(f"Папка не найдена: {folder}")
@@ -63,7 +66,15 @@ def load_documents(
                 warnings.append(f"Формат пропущен: {label}")
 
         if reader_files:
-            documents.extend(_load_with_llamaindex(reader_files, corpus, warnings))
+            documents.extend(
+                _load_with_llamaindex(
+                    reader_files,
+                    corpus,
+                    warnings,
+                    ocr_enabled=ocr_enabled,
+                    ocr_languages=ocr_languages,
+                )
+            )
     finally:
         for temp in temp_dirs:
             temp.cleanup()
@@ -75,11 +86,15 @@ def _load_with_llamaindex(
     files: list[tuple[Path, str]],
     corpus: str,
     warnings: list[str],
+    ocr_enabled: bool = True,
+    ocr_languages: str = "rus+eng",
 ) -> list[Document]:
     documents: list[Document] = []
     label_by_name: dict[str, list[str]] = {}
+    path_by_label: dict[str, Path] = {}
     for path, label in files:
         label_by_name.setdefault(path.name, []).append(label)
+        path_by_label[label] = path
 
     try:
         reader = SimpleDirectoryReader(
@@ -93,6 +108,9 @@ def _load_with_llamaindex(
         return documents
 
     used_labels: set[str] = set()
+    kept_labels: set[str] = set()
+    empty_counts: dict[str, int] = {}
+
     for doc in loaded:
         file_name = doc.metadata.get("file_name") or Path(
             str(doc.metadata.get("file_path", "unknown"))
@@ -119,8 +137,50 @@ def _load_with_llamaindex(
         )
         if doc.text and len(doc.text.strip()) >= 20:
             documents.append(doc)
+            kept_labels.add(label)
         else:
-            warnings.append(f"Пустой или слишком короткий документ: {label}")
+            empty_counts[label] = empty_counts.get(label, 0) + 1
+
+    ocr_available, ocr_hint = ocr_status()
+    ocr_hint_shown = False
+
+    for label, count in list(empty_counts.items()):
+        if label in kept_labels and count == 0:
+            continue
+
+        path = path_by_label.get(label)
+        if ocr_enabled and path and path.suffix.lower() == ".pdf":
+            ocr_docs, note = extract_pdf_with_ocr(
+                path,
+                label,
+                corpus=corpus,
+                languages=ocr_languages,
+            )
+            if ocr_docs:
+                documents = [doc for doc in documents if doc.metadata.get("file_path") != label]
+                documents.extend(ocr_docs)
+                kept_labels.add(label)
+                if note:
+                    warnings.append(note)
+                continue
+            if note and not ocr_hint_shown:
+                warnings.append(f"OCR недоступен: {note}")
+                ocr_hint_shown = True
+
+        if ocr_enabled and not ocr_available and not ocr_hint_shown:
+            warnings.append(f"OCR недоступен: {ocr_hint}")
+            ocr_hint_shown = True
+
+        warnings.append(
+            f"Нет текстового слоя (нужен OCR): {label} "
+            f"({count} стр./фрагментов без текста)"
+        )
+
+    expected = {label for _, label in files}
+    missing = expected - kept_labels - set(empty_counts)
+    for label in sorted(missing):
+        warnings.append(f"Файл не попал в индекс (не прочитан): {label}")
+
     return documents
 
 

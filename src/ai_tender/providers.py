@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from typing import Any
 
 from llama_index.core.llms import LLM
 
-from .models import Finding, Settings, Status
+from .models import (
+    DEFAULT_USER_INSTRUCTION,
+    STATUS_PRIORITY,
+    Finding,
+    Settings,
+    Status,
+)
 
 
 def build_llm(settings: Settings) -> LLM:
@@ -45,24 +52,23 @@ def build_llm(settings: Settings) -> LLM:
 ASSESS_SCHEMA_HINT = """
 Верни ТОЛЬКО JSON-объект вида:
 {
-  "summary": "краткое резюме на русском",
   "items": [
     {
       "index": 0,
       "status": "found|partial|not_found|uncertain",
-      "explanation": "почему такой статус, только по цитатам",
+      "explanation": "1-2 коротких предложения: требование тендера ↔ что подтверждает эталон",
       "confidence": 0.0
     }
   ]
 }
 
-status:
-- found — в тендере явно есть то же ТС/параметр из эталона (по цитатам)
-- partial — частичное пересечение (часть параметра подтверждена)
-- not_found — по переданным цитатам вхождения нет
+status (для требования тендера):
+- found — цитаты эталона подтверждают применимость к этому требованию
+- partial — подтверждена только часть требования
+- not_found — по цитатам применимость не подтверждается
 - uncertain — данных недостаточно
 
-Не опирайся на знания вне цитат.
+Не опирайся на знания вне цитат. Не пиши длинных резюме.
 """.strip()
 
 
@@ -70,51 +76,50 @@ def assess_findings(
     llm: LLM,
     candidates: list[tuple[Any, list[Any]]],
     node_to_evidence,
+    user_instruction: str | None = None,
+    max_findings: int = 12,
 ) -> tuple[str, list[Finding]]:
     if not candidates:
         return "Кандидаты для сопоставления не найдены.", []
 
+    instruction = (user_instruction or DEFAULT_USER_INSTRUCTION).strip()
     payload_items: list[dict[str, Any]] = []
     prepared: list[Finding] = []
 
-    for index, (asset_node, hits) in enumerate(candidates):
-        asset = node_to_evidence(asset_node)
-        tender_hits = [node_to_evidence(hit.node, hit.score) for hit in hits]
-        query_text = asset.quote[:300]
+    for index, (tender_node, hits) in enumerate(candidates):
+        tender = node_to_evidence(tender_node)
+        asset_hits = [node_to_evidence(hit.node, hit.score) for hit in hits]
+        query_text = tender.quote[:300]
 
         prepared.append(
             Finding(
                 query_text=query_text,
-                asset=asset,
-                tender_hits=tender_hits,
+                tender=tender,
+                asset_hits=asset_hits,
             )
         )
 
         payload_items.append(
             {
                 "index": index,
-                "asset": asset.model_dump(),
-                "tender_hits": [item.model_dump() for item in tender_hits],
+                "tender": tender.model_dump(),
+                "asset_hits": [item.model_dump() for item in asset_hits],
             }
         )
 
-    # Батчами, чтобы не раздувать контекст.
     batch_size = 8
-    summary_parts: list[str] = []
-
     for start in range(0, len(payload_items), batch_size):
         batch = payload_items[start : start + batch_size]
         prompt = (
-            "Ты аналитик закупок. По каждой записи сравни эталонный фрагмент "
-            "ТС/параметра с найденными фрагментами тендера.\n"
-            f"{ASSESS_SCHEMA_HINT}\n\nДАННЫЕ:\n{json.dumps(batch, ensure_ascii=False)}"
+            "Ты аналитик закупок. Для каждого требования тендера оцени "
+            "подтверждение в цитатах эталона.\n"
+            f"ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:\n{instruction}\n\n"
+            f"{ASSESS_SCHEMA_HINT}\n\n"
+            f"ДАННЫЕ:\n{json.dumps(batch, ensure_ascii=False)}"
         )
 
         response = llm.complete(prompt)
         data = _parse_json(str(response))
-
-        if data.get("summary"):
-            summary_parts.append(str(data["summary"]))
 
         for item in data.get("items", []):
             local = int(item.get("index", -1))
@@ -129,7 +134,7 @@ def assess_findings(
             except ValueError:
                 target.status = Status.uncertain
 
-            target.explanation = str(item.get("explanation", ""))
+            target.explanation = str(item.get("explanation", "")).strip()
             try:
                 target.confidence = float(item.get("confidence", 0))
             except (TypeError, ValueError):
@@ -137,11 +142,56 @@ def assess_findings(
 
             target.confidence = min(max(target.confidence, 0.0), 1.0)
 
-    summary = (
-        " ".join(summary_parts).strip()
-        or "Оценка выполнена по найденным кандидатам."
+    findings = select_important_findings(prepared, max_findings=max_findings)
+    summary = build_compact_summary(prepared, findings)
+    return summary, findings
+
+
+def select_important_findings(
+    findings: list[Finding],
+    max_findings: int = 12,
+) -> list[Finding]:
+    """Оставляем в основном подтверждённые/частичные совпадения, без шума."""
+    preferred = [
+        item
+        for item in findings
+        if item.status in (Status.found, Status.partial)
+        or (item.status == Status.uncertain and item.confidence >= 0.6)
+    ]
+    pool = preferred or [
+        item for item in findings if item.status != Status.not_found
+    ] or list(findings)
+
+    pool.sort(
+        key=lambda item: (
+            STATUS_PRIORITY.get(item.status, 9),
+            -item.confidence,
+        )
     )
-    return summary, prepared
+    return pool[: max(1, max_findings)]
+
+
+def build_compact_summary(
+    all_findings: list[Finding],
+    shown: list[Finding],
+) -> str:
+    counts = Counter(item.status for item in all_findings)
+    parts = [
+        f"Проверено требований тендера: {len(all_findings)}.",
+        f"Применимо: {counts[Status.found]}, "
+        f"частично: {counts[Status.partial]}, "
+        f"не подтверждено: {counts[Status.not_found]}, "
+        f"неясно: {counts[Status.uncertain]}.",
+        f"В таблице — {len(shown)} наиболее значимых.",
+    ]
+    highlights = [
+        item.explanation
+        for item in shown
+        if item.explanation and item.status in (Status.found, Status.partial)
+    ][:2]
+    if highlights:
+        parts.append("Ключевые: " + " | ".join(highlights))
+    return " ".join(parts)
 
 
 def _parse_json(content: str) -> dict:
@@ -163,4 +213,3 @@ def _parse_json(content: str) -> dict:
     if not isinstance(result, dict):
         raise ValueError("Ответ LLM должен быть JSON-объектом")
     return result
-
