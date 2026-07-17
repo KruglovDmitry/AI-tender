@@ -120,6 +120,25 @@ st.markdown(
 )
 
 
+def is_running_in_docker() -> bool:
+    return os.environ.get("RUNNING_IN_DOCKER") == "1" or Path("/.dockerenv").exists()
+
+
+def default_tender_path() -> str:
+    if is_running_in_docker():
+        for candidate in (Path("/data/tender/1"), Path("/data/tender")):
+            if candidate.is_dir():
+                return str(candidate)
+        return "/data/tender"
+    return str((Path.cwd() / "sources" / "1").resolve())
+
+
+def default_assets_path() -> str:
+    if is_running_in_docker():
+        return "/data/assets"
+    return str((Path.cwd() / "assets").resolve())
+
+
 def pick_folder_dialog(initial: str | None = None) -> str | None:
     """Диалог выбора папки в отдельном процессе (совместимо со Streamlit)."""
     initialdir = ""
@@ -186,6 +205,13 @@ def _pick_folder_callback(state_key: str, error_key: str) -> None:
 
 
 def folder_path_input(label: str, state_key: str, pick_key: str) -> str:
+    if is_running_in_docker():
+        st.caption(
+            "Docker: папки с хоста смонтированы как "
+            "`sources` → `/data/tender`, `assets` → `/data/assets`."
+        )
+        return st.text_input(label, key=state_key)
+
     error_key = f"{pick_key}__error"
     if error_key in st.session_state:
         st.error(st.session_state.pop(error_key))
@@ -276,12 +302,18 @@ with st.sidebar:
     elif ocr_enabled:
         st.caption(f"Tesseract: {ocr_hint}")
 
-default_tender = str((Path.cwd() / "sources" / "1").resolve())
-default_assets = str((Path.cwd() / "assets").resolve())
+default_tender = default_tender_path()
+default_assets = default_assets_path()
 if "tender_folder" not in st.session_state:
     st.session_state.tender_folder = default_tender
 if "assets_folder" not in st.session_state:
     st.session_state.assets_folder = default_assets
+
+if is_running_in_docker():
+    st.info(
+        "Режим Docker. Положите документы в папки `sources` и `assets` рядом с проектом "
+        "или укажите путь внутри контейнера (`/data/tender`, `/data/assets`)."
+    )
 
 tender_input = folder_path_input(
     "Папка с документами тендера",

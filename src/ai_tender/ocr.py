@@ -33,29 +33,78 @@ def tesseract_path() -> Path | None:
     return None
 
 
+def _system_tessdata_candidates() -> list[Path]:
+    """Стандартные пути tessdata: Windows installer + Debian/Ubuntu packages."""
+    return [
+        Path(r"C:\Program Files\Tesseract-OCR\tessdata"),
+        Path(r"C:\Program Files (x86)\Tesseract-OCR\tessdata"),
+        Path("/usr/share/tesseract-ocr/5/tessdata"),
+        Path("/usr/share/tesseract-ocr/4.00/tessdata"),
+        Path("/usr/share/tessdata"),
+    ]
+
+
 def tessdata_dir() -> Path | None:
     import os
 
-    for candidate in (
-        Path(os.environ["TESSDATA_PREFIX"]) if os.environ.get("TESSDATA_PREFIX") else None,
+    prefix = os.environ.get("TESSDATA_PREFIX")
+    candidates: list[Path | None] = [
+        Path(prefix) if prefix else None,
         _REPO_TESSDATA,
-        Path(r"C:\Program Files\Tesseract-OCR\tessdata"),
-        Path(r"C:\Program Files (x86)\Tesseract-OCR\tessdata"),
-    ):
-        if candidate and candidate.is_dir() and any(candidate.glob("*.traineddata")):
-            return candidate
+        *_system_tessdata_candidates(),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        # TESSDATA_PREFIX иногда указывает на родителя tessdata/
+        for folder in (candidate, candidate / "tessdata"):
+            if folder.is_dir() and any(folder.glob("*.traineddata")):
+                return folder
     return None
 
 
+def _tesseract_listed_langs() -> set[str] | None:
+    """Языки из `tesseract --list-langs` (если бинарь доступен)."""
+    tess = tesseract_path()
+    if tess is None:
+        return None
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            [str(tess), "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        langs = {
+            line.strip()
+            for line in output.splitlines()
+            if line.strip() and not line.lower().startswith("list of")
+        }
+        return langs or None
+    except Exception:
+        return None
+
+
 def _languages_available(languages: str) -> list[str]:
+    wanted = [lang.strip() for lang in languages.replace("+", " ").split() if lang.strip()]
     folder = tessdata_dir()
-    if folder is None:
-        return list(languages.replace("+", " ").split())
-    missing: list[str] = []
-    for lang in languages.replace("+", " ").split():
-        if not (folder / f"{lang.strip()}.traineddata").is_file():
-            missing.append(lang.strip())
-    return missing
+    if folder is not None:
+        return [
+            lang
+            for lang in wanted
+            if not (folder / f"{lang}.traineddata").is_file()
+        ]
+
+    listed = _tesseract_listed_langs()
+    if listed is not None:
+        return [lang for lang in wanted if lang not in listed]
+
+    # Не смогли найти tessdata и опросить tesseract — считаем все отсутствующими.
+    return wanted
 
 
 def _ocr_config() -> str:
@@ -63,11 +112,7 @@ def _ocr_config() -> str:
     folder = tessdata_dir()
     if folder is None:
         return ""
-    install_dirs = {
-        Path(r"C:\Program Files\Tesseract-OCR\tessdata"),
-        Path(r"C:\Program Files (x86)\Tesseract-OCR\tessdata"),
-    }
-    if folder.resolve() in {path.resolve() for path in install_dirs}:
+    if folder.resolve() in {path.resolve() for path in _system_tessdata_candidates()}:
         return ""
     return f"--tessdata-dir {folder}"
 

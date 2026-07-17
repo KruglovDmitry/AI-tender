@@ -37,7 +37,10 @@ def find_unrar_tool() -> Path | None:
 
     for candidate in (
         shutil.which("unrar"),
+        shutil.which("unrar-free"),
         shutil.which("UnRAR"),
+        "/usr/bin/unrar",
+        "/usr/bin/unrar-free",
         r"C:\Program Files\WinRAR\UnRAR.exe",
         r"C:\Program Files (x86)\WinRAR\UnRAR.exe",
     ):
@@ -53,7 +56,10 @@ def find_7z_tool() -> Path | None:
 
     for candidate in (
         shutil.which("7z"),
+        shutil.which("7zz"),
         shutil.which("7za"),
+        "/usr/bin/7z",
+        "/usr/bin/7zz",
         r"C:\Program Files\7-Zip\7z.exe",
         r"C:\Program Files (x86)\7-Zip\7z.exe",
     ):

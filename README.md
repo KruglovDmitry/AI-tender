@@ -14,7 +14,34 @@ LlamaIndex RAG для оценки применимости эталонной �
 6. PDF без текстового слоя: при включённом OCR распознаются через Tesseract (медленнее).
 7. RAR: нужен WinRAR (UnRAR) или 7-Zip; путь можно задать через `UNRAR_TOOL`.
 
-## Запуск
+## Запуск в Docker (Windows, одной кнопкой)
+
+Требуется [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+1. Заполните `.env` (или он создастся из `.env.example` при первом запуске).
+2. Положите документы в `sources/` и `assets/` рядом с проектом.
+3. Дважды щёлкните **`start.bat`** — Docker + **нативное окно** (WebView2, без вкладок браузера).
+4. Без Docker: **`start-native.bat`** — локальный Streamlit в том же окне.
+5. Остановка Docker: **`stop.bat`**.
+
+Пути внутри контейнера:
+- тендер: `/data/tender` (папка `sources` на хосте)
+- эталоны: `/data/assets`
+
+Кэш эмбеддингов и индекса: `data/` на хосте.
+
+```powershell
+# Docker + нативное окно:
+docker compose up -d --build
+pip install "pywebview>=5.0"
+python scripts/native_window.py
+
+# Локально без Docker:
+pip install -e ".[native]"
+python scripts/native_window.py --serve
+```
+
+## Запуск локально (без Docker)
 
 Требуется Python 3.12.
 

@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "python-docx"]
+native = ["pywebview>=5.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_tender"]

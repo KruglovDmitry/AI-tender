@@ -1,0 +1,19 @@
+services:
+  ai-tender:
+    build: .
+    container_name: ai-tender
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      RUNNING_IN_DOCKER: "1"
+    volumes:
+      - ./sources:/data/tender:ro
+      - ./assets:/data/assets:ro
+      - ./data:/app/data
+      - hf_cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
