@@ -1,5 +1,6 @@
 ﻿from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
 
 from .index import (
     indexed_file_paths,
@@ -22,6 +23,7 @@ def analyze(
     progress: ProgressCallback | None = None,
 ) -> AnalysisReport:
     settings = settings or get_settings()
+    started = perf_counter()
 
     def update(message: str, value: float) -> None:
         if progress:
@@ -79,6 +81,7 @@ def analyze(
         max_findings=settings.max_findings,
     )
 
+    elapsed_seconds = round(perf_counter() - started, 2)
     update("Сбор результата", 0.98)
     return AnalysisReport(
         tender_path=str(tender_path.resolve()),
@@ -90,4 +93,5 @@ def analyze(
         warnings=asset_warnings + tender_warnings,
         indexed_files=indexed_files,
         index_reused=index_reused,
+        elapsed_seconds=elapsed_seconds,
     )

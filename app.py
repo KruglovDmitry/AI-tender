@@ -5,9 +5,16 @@ from pathlib import Path
 
 import streamlit as st
 
-from ai_tender.models import DEFAULT_USER_INSTRUCTION, STATUS_LABELS, get_settings
+from ai_tender.models import (
+    DEFAULT_USER_INSTRUCTION,
+    STATUS_LABELS,
+    AnalysisReport,
+    Evidence,
+    get_settings,
+)
 from ai_tender.ocr import ocr_status
 from ai_tender.pipeline import analyze
+from ai_tender.viewer import build_document_view
 
 st.set_page_config(page_title="AI Tender", page_icon="📋", layout="wide")
 st.title("AI Tender")
@@ -231,6 +238,104 @@ def folder_path_input(label: str, state_key: str, pick_key: str) -> str:
     return str(st.session_state[state_key])
 
 
+@st.dialog("Фрагмент в документе", width="large")
+def show_evidence_dialog(evidence: Evidence, root: str | None, role: str) -> None:
+    view = build_document_view(evidence, root, role=role)
+    st.markdown(f"**{view.title}**")
+    st.caption(f"{view.location}" + (f" · `{view.path}`" if view.path else ""))
+    if view.note:
+        st.info(view.note)
+    st.markdown(view.body_html, unsafe_allow_html=True)
+
+
+def format_elapsed(seconds: float | None) -> str:
+    if seconds is None:
+        return "—"
+    if seconds < 60:
+        return f"{seconds:.1f} с"
+    minutes = int(seconds // 60)
+    rest = seconds - minutes * 60
+    return f"{minutes} мин {rest:.0f} с"
+
+
+def render_report(report: AnalysisReport, tender_root: str, assets_root: str) -> None:
+    cache_note = (
+        "индекс эталонов из кэша"
+        if report.index_reused
+        else "индекс эталонов построен заново"
+    )
+    elapsed = format_elapsed(report.elapsed_seconds)
+    st.success(f"Готово за {elapsed}. {cache_note.capitalize()}.")
+
+    if report.summary:
+        st.info(report.summary)
+
+    if report.indexed_files:
+        with st.expander(f"Эталоны в индексе ({len(report.indexed_files)} файлов)"):
+            st.write("\n".join(f"- {Path(path).name}" for path in report.indexed_files))
+
+    if not report.findings:
+        st.warning("Результатов нет — увеличьте число требований или top-k.")
+    else:
+        rows = [
+            {
+                "Статус": STATUS_LABELS[item.status.value],
+                "Требование тендера": item.tender.quote[:200],
+                "Файл тендера": Path(item.tender.file).name,
+                "Эталон": (
+                    Path(item.asset_hits[0].file).name if item.asset_hits else "—"
+                ),
+                "Хитов эталона": len(item.asset_hits),
+                "Пояснение": item.explanation[:200],
+                "Уверенность": round(item.confidence, 2),
+            }
+            for item in report.findings
+        ]
+        st.dataframe(rows, width="stretch", hide_index=True)
+
+        st.subheader("Детали")
+        for index, item in enumerate(report.findings, start=1):
+            title = (
+                f"{index}. {STATUS_LABELS[item.status.value]} — "
+                f"{Path(item.tender.file).name}"
+            )
+            with st.expander(title, expanded=(index == 1)):
+                st.markdown(f"**Пояснение:** {item.explanation or '—'}")
+                left, right = st.columns(2)
+                with left:
+                    st.markdown("**Тендер**")
+                    st.caption(f"{item.tender.file} · {item.tender.location}")
+                    st.write(item.tender.quote)
+                    if st.button(
+                        "Показать в документе",
+                        key=f"view_tender_{index}",
+                        width="stretch",
+                    ):
+                        show_evidence_dialog(item.tender, tender_root, "Тендер")
+                with right:
+                    st.markdown("**Эталон**")
+                    if not item.asset_hits:
+                        st.write("Нет хитов")
+                    for hit_index, hit in enumerate(item.asset_hits):
+                        score = (
+                            f" · score={hit.score:.3f}"
+                            if hit.score is not None
+                            else ""
+                        )
+                        st.caption(f"{hit.file} · {hit.location}{score}")
+                        st.write(hit.quote)
+                        if st.button(
+                            "Показать в документе",
+                            key=f"view_asset_{index}_{hit_index}",
+                            width="stretch",
+                        ):
+                            show_evidence_dialog(hit, assets_root, "Эталон")
+
+    if report.warnings:
+        with st.expander(f"Предупреждения ({len(report.warnings)})"):
+            st.write("\n".join(f"- {warning}" for warning in report.warnings))
+
+
 settings = get_settings()
 with st.sidebar:
     st.header("Настройки")
@@ -375,73 +480,15 @@ if st.button("Начать сравнение", type="primary", width="stretch")
             status.empty()
             st.exception(exc)
         else:
-            progress_bar.progress(1.0)
-            cache_note = (
-                "индекс эталонов из кэша"
-                if report.index_reused
-                else "индекс эталонов построен заново"
-            )
-            status.success(f"Готово. {cache_note.capitalize()}.")
+            progress_bar.empty()
+            status.empty()
+            st.session_state["last_report"] = report
+            st.session_state["last_tender_root"] = str(tender_path.resolve())
+            st.session_state["last_assets_root"] = str(assets_path.resolve())
 
-            if report.summary:
-                st.info(report.summary)
-
-            if report.indexed_files:
-                with st.expander(
-                    f"Эталоны в индексе ({len(report.indexed_files)} файлов)"
-                ):
-                    st.write(
-                        "\n".join(f"- {Path(path).name}" for path in report.indexed_files)
-                    )
-
-            if not report.findings:
-                st.warning(
-                    "Результатов нет — увеличьте число требований или top-k."
-                )
-            else:
-                rows = [
-                    {
-                        "Статус": STATUS_LABELS[item.status.value],
-                        "Требование тендера": item.tender.quote[:200],
-                        "Файл тендера": Path(item.tender.file).name,
-                        "Эталон": (
-                            Path(item.asset_hits[0].file).name
-                            if item.asset_hits
-                            else "—"
-                        ),
-                        "Хитов эталона": len(item.asset_hits),
-                        "Пояснение": item.explanation[:200],
-                        "Уверенность": round(item.confidence, 2),
-                    }
-                    for item in report.findings
-                ]
-                st.dataframe(rows, width="stretch", hide_index=True)
-
-                st.subheader("Детали")
-                for index, item in enumerate(report.findings, start=1):
-                    title = (
-                        f"{index}. {STATUS_LABELS[item.status.value]} — "
-                        f"{Path(item.tender.file).name}"
-                    )
-                    with st.expander(title):
-                        st.markdown(f"**Пояснение:** {item.explanation or '—'}")
-                        left, right = st.columns(2)
-                        left.markdown("**Тендер**")
-                        left.caption(f"{item.tender.file} · {item.tender.location}")
-                        left.write(item.tender.quote)
-
-                        right.markdown("**Эталон**")
-                        if not item.asset_hits:
-                            right.write("Нет хитов")
-                        for hit in item.asset_hits:
-                            score = (
-                                f" · score={hit.score:.3f}"
-                                if hit.score is not None
-                                else ""
-                            )
-                            right.caption(f"{hit.file} · {hit.location}{score}")
-                            right.write(hit.quote)
-
-            if report.warnings:
-                with st.expander(f"Предупреждения ({len(report.warnings)})"):
-                    st.write("\n".join(f"- {warning}" for warning in report.warnings))
+if "last_report" in st.session_state:
+    render_report(
+        st.session_state["last_report"],
+        st.session_state.get("last_tender_root", ""),
+        st.session_state.get("last_assets_root", ""),
+    )

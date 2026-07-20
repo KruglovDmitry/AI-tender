@@ -253,6 +253,20 @@ def select_query_nodes(nodes: list[BaseNode], limit: int) -> list[BaseNode]:
 select_asset_query_nodes = select_query_nodes
 
 
+def _page_from_metadata(meta: dict) -> int | None:
+    raw = meta.get("page_number")
+    if raw is None:
+        raw = meta.get("page_label")
+    if raw is None:
+        location = str(meta.get("location") or "")
+        if location.startswith("стр."):
+            raw = location.removeprefix("стр.").strip()
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def node_to_evidence(node: BaseNode, score: float | None = None):
     from .models import Evidence
 
@@ -266,6 +280,7 @@ def node_to_evidence(node: BaseNode, score: float | None = None):
         location=str(meta.get("location") or "фрагмент"),
         quote=quote,
         score=None if score is None else round(float(score), 4),
+        page=_page_from_metadata(meta),
     )
 
 

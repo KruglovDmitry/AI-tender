@@ -13,6 +13,7 @@ class Evidence(BaseModel):
     location: str
     quote: str
     score: float | None = None
+    page: int | None = None
 
 
 class Status(StrEnum):
@@ -66,6 +67,7 @@ class AnalysisReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     indexed_files: list[str] = Field(default_factory=list)
     index_reused: bool = False
+    elapsed_seconds: float | None = None
     report_dir: Path | None = None
 
 
