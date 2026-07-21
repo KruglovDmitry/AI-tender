@@ -6,18 +6,15 @@ from pathlib import Path
 import streamlit as st
 
 from ai_tender.models import (
-    STATUS_LABELS,
     AnalysisReport,
-    Evidence,
     get_settings,
 )
 from ai_tender.ocr import ocr_status
 from ai_tender.graph import analyze
-from ai_tender.viewer import build_document_view
 
 st.set_page_config(page_title="AI Tender", page_icon="📋", layout="wide")
 st.title("AI Tender")
-st.caption("Требование тендера → подтверждение в эталоне (hybrid RAG + LLM)")
+st.caption("Предмет закупки (перечень позиций)")
 
 st.markdown(
     """
@@ -237,16 +234,6 @@ def folder_path_input(label: str, state_key: str, pick_key: str) -> str:
     return str(st.session_state[state_key])
 
 
-@st.dialog("Фрагмент в документе", width="large")
-def show_evidence_dialog(evidence: Evidence, root: str | None, role: str) -> None:
-    view = build_document_view(evidence, root, role=role)
-    st.markdown(f"**{view.title}**")
-    st.caption(f"{view.location}" + (f" · `{view.path}`" if view.path else ""))
-    if view.note:
-        st.info(view.note)
-    st.markdown(view.body_html, unsafe_allow_html=True)
-
-
 def format_elapsed(seconds: float | None) -> str:
     if seconds is None:
         return "—"
@@ -258,16 +245,11 @@ def format_elapsed(seconds: float | None) -> str:
 
 
 def render_report(report: AnalysisReport, tender_root: str, assets_root: str) -> None:
-    cache_note = (
-        "индекс эталонов из кэша"
-        if report.index_reused
-        else "индекс эталонов построен заново"
-    )
+    del tender_root, assets_root  # этап сверки с эталоном пока отключён
     elapsed = format_elapsed(report.elapsed_seconds)
-    st.success(f"Готово за {elapsed}. {cache_note.capitalize()}.")
+    st.success(f"Готово за {elapsed}.")
 
     if report.summary:
-        # st.info поддерживает markdown; двойной пробел+\\n сохраняет переносы.
         st.info(report.summary.replace("\n", "  \n"))
 
     qs = report.query_selection or {}
@@ -285,128 +267,49 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
                 reason = item.get("reason", "")
                 st.markdown(
                     f"{mark} **p{item.get('priority', '?')}** `{Path(path).name}` "
-                    f"({item.get('role', '—')})"
+                    f"(scope={item.get('scope_level', '—')}, {item.get('role', '—')})"
                     + (f" — {reason}" if reason else "")
                 )
             skipped = doc_sel.get("skipped") or []
             if skipped:
                 st.markdown("**Пропущены:**")
                 for item in skipped[:12]:
-                    st.markdown(f"- `{Path(item.get('path', '')).name}` — {item.get('reason', '')}")
+                    st.markdown(
+                        f"- `{Path(item.get('path', '')).name}` — {item.get('reason', '')}"
+                    )
             if doc_sel.get("error"):
                 st.warning(f"Выбор файлов: fallback — {doc_sel['error']}")
 
-    if qs.get("scope_first") and qs.get("scope"):
-        scope = qs.get("scope") or {}
-        coverage = qs.get("scope_coverage") or {}
-        with st.expander("Предмет закупки (Scope)"):
-            st.caption(
-                f"confidence={scope.get('overall_confidence', '—')} · "
-                f"needs_more_docs={scope.get('needs_more_docs', False)}"
-            )
-            items = scope.get("items") or []
-            if items:
-                for s in items:
-                    st.markdown(f"- {s}")
-            missing = coverage.get("missing") or []
-            if missing:
-                st.warning(f"Не покрыты items: {len(missing)}")
-            if scope.get("missing_signals"):
-                st.info(scope.get("missing_signals"))
-
-    req_stats = qs.get("requirements_stats") or {}
-    truncated = req_stats.get("truncated_files") or []
-    if truncated:
-        st.warning(
-            "Документ(ы) обрезаны по лимиту длины при extract: "
-            + ", ".join(Path(name).name for name in truncated)
+    scope = qs.get("scope") or {}
+    items = scope.get("items") or []
+    with st.expander("Предмет закупки", expanded=True):
+        st.caption(
+            f"confidence={scope.get('overall_confidence', '—')} · "
+            f"needs_more_docs={scope.get('needs_more_docs', False)}"
         )
-
-    top_reqs = qs.get("top_requirements") or []
-    if top_reqs:
-        with st.expander("Извлечённые требования (топ)"):
-            for item in top_reqs:
-                loc = item.get("location") or ""
-                st.markdown(
-                    f"- **p{item.get('priority', '?')}** "
-                    f"({item.get('confidence', 0):.2f}): {item.get('text', '')}"
-                    + (f"  \n  _{loc}_" if loc else "")
-                )
-
-    if getattr(report, "extracted_requirements", None):
-        with st.expander(
-            f"Все извлечённые требования ({len(report.extracted_requirements)})"
-        ):
-            for index, req in enumerate(report.extracted_requirements, start=1):
-                st.markdown(
-                    f"**{index}. {req.text}**  \n"
-                    f"`{req.location}` · `{Path(req.file).name}`  \n"
-                    f"> {req.quote[:300]}"
-                )
-
-    if report.indexed_files:
-        with st.expander(f"Эталоны в индексе ({len(report.indexed_files)} файлов)"):
-            st.write("\n".join(f"- {Path(path).name}" for path in report.indexed_files))
-
-    if not report.findings:
-        st.warning("Результатов нет — увеличьте число требований или top-k.")
-    else:
-        rows = [
-            {
-                "Статус": STATUS_LABELS[item.status.value],
-                "Тип": item.kind or "—",
-                "Требование тендера": item.tender.quote[:200],
-                "Файл тендера": Path(item.tender.file).name,
-                "Эталон": (
-                    Path(item.asset_hits[0].file).name if item.asset_hits else "—"
-                ),
-                "Хитов эталона": len(item.asset_hits),
-                "Пояснение": item.explanation[:200],
-                "Уверенность": round(item.confidence, 2),
-            }
-            for item in report.findings
-        ]
-        st.dataframe(rows, width="stretch", hide_index=True)
-
-        st.subheader("Детали")
-        for index, item in enumerate(report.findings, start=1):
-            title = (
-                f"{index}. {STATUS_LABELS[item.status.value]} — "
-                f"{Path(item.tender.file).name}"
+        summary = (scope.get("summary") or "").strip()
+        if summary:
+            st.markdown(f"**Титул:** {summary}")
+        if items:
+            st.markdown("**Перечень позиций:**")
+            for index, item in enumerate(items, start=1):
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip() or "—"
+                    qty = item.get("qty")
+                    unit = str(item.get("unit") or "").strip()
+                    qty_part = f" — {qty} {unit}".rstrip() if qty is not None else ""
+                    st.markdown(f"{index}. {name}{qty_part}")
+                else:
+                    st.markdown(f"{index}. {item}")
+        elif scope.get("missing_signals"):
+            st.warning(scope.get("missing_signals"))
+        else:
+            st.warning("Перечень позиций не извлечён.")
+        files_used = scope.get("files_used") or []
+        if files_used:
+            st.caption(
+                "Файлы: " + ", ".join(Path(path).name for path in files_used)
             )
-            with st.expander(title, expanded=(index == 1)):
-                st.markdown(f"**Пояснение:** {item.explanation or '—'}")
-                left, right = st.columns(2)
-                with left:
-                    st.markdown("**Тендер**")
-                    if item.query_text and item.query_text != item.tender.quote[:300]:
-                        st.markdown(f"**Требование:** {item.query_text}")
-                    st.caption(f"{item.tender.file} · {item.tender.location}")
-                    st.write(item.tender.quote)
-                    if st.button(
-                        "Показать в документе",
-                        key=f"view_tender_{index}",
-                        width="stretch",
-                    ):
-                        show_evidence_dialog(item.tender, tender_root, "Тендер")
-                with right:
-                    st.markdown("**Эталон**")
-                    if not item.asset_hits:
-                        st.write("Нет хитов")
-                    for hit_index, hit in enumerate(item.asset_hits):
-                        score = (
-                            f" · score={hit.score:.3f}"
-                            if hit.score is not None
-                            else ""
-                        )
-                        st.caption(f"{hit.file} · {hit.location}{score}")
-                        st.write(hit.quote)
-                        if st.button(
-                            "Показать в документе",
-                            key=f"view_asset_{index}_{hit_index}",
-                            width="stretch",
-                        ):
-                            show_evidence_dialog(hit, assets_root, "Эталон")
 
     if report.warnings:
         with st.expander(f"Предупреждения ({len(report.warnings)})"):

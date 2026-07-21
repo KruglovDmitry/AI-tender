@@ -218,13 +218,20 @@ def _load_with_llamaindex(
 
     ocr_available, ocr_hint = ocr_status()
     ocr_hint_shown = False
+    expected = {label for _, label in files}
 
-    for label, count in list(empty_counts.items()):
-        if label in kept_labels and count == 0:
-            continue
+    # OCR для PDF без текстового слоя: пустые страницы ИЛИ файл вовсе не попал в load.
+    ocr_candidates = {
+        label
+        for label in expected
+        if label not in kept_labels
+        and path_by_label.get(label) is not None
+        and path_by_label[label].suffix.lower() == ".pdf"
+    }
 
-        path = path_by_label.get(label)
-        if ocr_enabled and path and path.suffix.lower() == ".pdf":
+    for label in sorted(ocr_candidates):
+        path = path_by_label[label]
+        if ocr_enabled:
             ocr_docs, note = extract_pdf_with_ocr(
                 path,
                 label,
@@ -241,18 +248,20 @@ def _load_with_llamaindex(
             if note and not ocr_hint_shown:
                 warnings.append(f"OCR недоступен: {note}")
                 ocr_hint_shown = True
-
-        if ocr_enabled and not ocr_available and not ocr_hint_shown:
+        elif not ocr_hint_shown and not ocr_available:
             warnings.append(f"OCR недоступен: {ocr_hint}")
             ocr_hint_shown = True
 
-        warnings.append(
-            f"Нет текстового слоя (нужен OCR): {label} "
-            f"({count} стр./фрагментов без текста)"
-        )
+        count = empty_counts.get(label, 0)
+        if count:
+            warnings.append(
+                f"Нет текстового слоя (нужен OCR): {label} "
+                f"({count} стр./фрагментов без текста)"
+            )
+        else:
+            warnings.append(f"Файл не попал в индекс (нужен OCR): {label}")
 
-    expected = {label for _, label in files}
-    missing = expected - kept_labels - set(empty_counts)
+    missing = expected - kept_labels - ocr_candidates
     for label in sorted(missing):
         warnings.append(f"Файл не попал в индекс (не прочитан): {label}")
 

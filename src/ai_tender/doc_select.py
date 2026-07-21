@@ -24,18 +24,19 @@ SELECT_SCHEMA_HINT = """
     }
   ],
   "skip": [
-    {"path": "...", "reason": "почему не нужен для извлечения требований"}
+    {"path": "...", "reason": "почему не нужен для предмета закупки"}
   ]
 }
 
 Правила:
-- priority: 1 = главный источник требований (ТЗ, техописание), 2 = дополнительный, 3 = запасной.
-- scope_level: 1 = общее описание закупки/предмета (первый слой), 2 = техническая спецификация/конкретные приборы, 3 = приложения/второстепенные детали.
-- В files включай только файлы, где могут быть артикулы/модели или техтребования к поставке.
-- Не включай: проект договора, обеспечение заявки, реквизиты, НМЦ/расчёты цены, регламенты ЭДО,
-  протоколы, шаблоны форм (если в имени нет явного ТЗ как основного документа).
-- Папки вроде «Техническое задание», файлы «ТЗ …», «техническ…» — обычно priority 1.
-- Извещение — priority 2–3, только если нужно уточнить предмет закупки.
+- Нужны файлы для ПРЕДМЕТА ЗАКУПКИ: общий титул И детальный перечень позиций.
+- priority: 1 = главный источник, 2 = дополнительный, 3 = запасной.
+- scope_level: 1 = общее описание/титул закупки («ТЗ на проведение…», извещение),
+  2 = детальное ТЗ с перечнем работ/оборудования и количествами (часто «ТЗ ФЗ-…»,
+  файлы в папке «Техническое задание»), 3 = приложения/второстепенное.
+- Включай ОБА слоя (scope_level 1 и 2), если они есть. Детальное ТЗ — priority 1.
+- Не включай: проект договора, обеспечение заявки, реквизиты, НМЦ/расчёты цены,
+  регламенты ЭДО, протоколы, шаблоны форм.
 - Не выдумывай пути — только из списка ниже.
 """.strip()
 
@@ -148,29 +149,44 @@ def select_files_heuristic(
     *,
     max_files: int,
 ) -> dict[str, Any]:
-    """Fallback: как technical_only, с ранжированием по маркерам в пути."""
+    """Fallback: ранжирование по маркерам в пути (титул + детальное ТЗ)."""
     if not entries:
         return {"files": [], "skip": [], "mode": "heuristic_empty"}
 
     paths = {entry.path for entry in entries}
     scored: list[tuple[int, int, str, str]] = []
     for entry in entries:
-        lower = entry.path.lower()
+        lower = entry.path.lower().replace("\\", "/")
+        name = Path(entry.path).name.lower()
         score = 10
         role = "other"
         scope_level = 3
 
-        # 1) "главное" описание (обычно в файлах вида "ТЗ на проведение закупки")
-        if "провед" in lower and "закуп" in lower:
+        in_tz_folder = "техническ" in lower
+        is_detailed_tz = (
+            ("тз" in name or name.startswith("тз"))
+            and (
+                "фз" in name
+                or "522" in name
+                or in_tz_folder
+            )
+        )
+        is_title_tz = "провед" in lower and "закуп" in lower
+        is_object_desc = any(
+            x in lower
+            for x in ("предмет", "объект закуп", "объект закупки", "описание объекта")
+        )
+
+        if is_detailed_tz:
+            # Детальный перечень позиций — тот же приоритет, что и титул.
+            score = 1
+            role = "specs"
+            scope_level = 2
+        elif is_title_tz or is_object_desc:
             score = 1
             role = "tz_main"
             scope_level = 1
-        elif any(x in lower for x in ("предмет", "объект закуп", "объект закупки", "описание объекта")):
-            score = 1
-            role = "tz_main"
-            scope_level = 1
-        # 2) спецификация/детальные требования по приборам
-        elif "техническ" in lower or lower.startswith("тз") or "/тз " in lower or " тз " in lower:
+        elif "техническ" in lower or "тз" in name or "/тз " in lower or " тз " in lower:
             score = 2
             role = "specs"
             scope_level = 2
@@ -181,6 +197,7 @@ def select_files_heuristic(
         elif "извещение" in lower:
             score = 4
             role = "notice"
+            scope_level = 1
         elif any(x in lower for x in ("нмц", "расценк", "реквизит", "договор", "обеспечен")):
             score = 8
             role = "other"
@@ -223,9 +240,10 @@ def select_tender_files_by_llm(
     valid_paths = {entry.path for entry in entries}
     catalog_list = format_catalog_list(entries)
     prompt = (
-        "Ты аналитик закупок. По структуре тендерной документации выбери файлы, "
-        f"из которых нужно извлечь артикулы/модели и техтребования к поставке. "
-        f"Верни не более {max_files} файлов в files, отсортированных по priority (1 = сначала).\n\n"
+        "Ты аналитик закупок. По структуре тендерной документации выбери файлы "
+        "для извлечения ПРЕДМЕТА ЗАКУПКИ: общий титул и детальный перечень позиций "
+        f"(работы/оборудование с количествами). Верни не более {max_files} файлов "
+        "в files, отсортированных по priority (1 = сначала).\n\n"
         f"{SELECT_SCHEMA_HINT}\n\n"
         f"СТРУКТУРА ПАПОК:\n{tree_text}\n\n"
         f"СПИСОК ФАЙЛОВ:\n{catalog_list}"

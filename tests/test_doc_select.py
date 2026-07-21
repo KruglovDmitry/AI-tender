@@ -20,17 +20,22 @@ def _entry(path: str, suffix: str = ".pdf", size: int = 1024) -> object:
     return TenderFileEntry(path=path, suffix=suffix, size_bytes=size, parent=parent)
 
 
-def test_heuristic_prefers_tz_over_contract() -> None:
+def test_heuristic_prefers_detailed_tz() -> None:
     entries = [
         _entry("Приложение №2 Проект договора.docx", ".docx"),
-        _entry("Приложение №1 Техническое задание/ТЗ ФЗ-522.pdf"),
+        _entry("Приложение №1 Техническое задание/ТЗ на провед.закупки.pdf"),
+        _entry("Приложение №1 Техническое задание/ТЗ ФЗ-522_6-20кВ.pdf"),
         _entry("Извещение по конкурсу.docx", ".docx"),
         _entry("Приложения к ТЗ/Расчет НМЦ.pdf"),
     ]
-    result = select_files_heuristic(entries, max_files=2)
+    result = select_files_heuristic(entries, max_files=3)
     paths = [item["path"] for item in result["files"]]
-    assert "Приложение №1 Техническое задание/ТЗ ФЗ-522.pdf" in paths
+    assert "Приложение №1 Техническое задание/ТЗ ФЗ-522_6-20кВ.pdf" in paths
     assert "Приложение №2 Проект договора.docx" not in paths
+    by_path = {item["path"]: item for item in result["files"]}
+    detailed = by_path["Приложение №1 Техническое задание/ТЗ ФЗ-522_6-20кВ.pdf"]
+    assert detailed["priority"] == 1
+    assert detailed["scope_level"] == 2
 
 
 def test_ranked_file_paths_sorts_by_priority() -> None:

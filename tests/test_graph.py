@@ -1,9 +1,5 @@
-from ai_tender.graph import (
-    build_graph,
-    route_after_coverage,
-    route_after_scope,
-)
-from ai_tender.doc_select import TenderFileEntry
+from ai_tender.graph import build_graph, route_after_scope
+from ai_tender.extract import scope_has_detailed_list
 
 
 def test_build_graph_compiles() -> None:
@@ -22,37 +18,35 @@ def test_route_after_scope_asks_more_when_empty() -> None:
     assert route_after_scope(state) == "load_next_scope_file"
 
 
-def test_route_after_scope_continues_when_ready() -> None:
+def test_route_after_scope_asks_more_for_title_only() -> None:
     state = {
-        "scope_items": [{"name": "ПКУ 6-10 кВ"}],
+        "scope_items": [{"name": "Выполнение ПИР, СМР по титулу…", "qty": None}],
         "scope_meta": {"needs_more_docs": False},
         "loaded_labels": ["a.pdf"],
         "ranked_paths": ["a.pdf", "b.pdf"],
         "scope_queue": ["a.pdf"],
     }
-    assert route_after_scope(state) == "load_remaining_for_reqs"
+    assert route_after_scope(state) == "load_next_scope_file"
 
 
-def test_route_after_coverage_expands_when_missing() -> None:
+def test_route_after_scope_finalizes_when_detailed() -> None:
     state = {
-        "expand_done": False,
-        "missing_scope_items": ["ПКУ"],
-        "loaded_labels": ["a.pdf"],
-        "ranked_paths": ["a.pdf"],
-        "catalog_entries": [
-            TenderFileEntry(path="a.pdf", suffix=".pdf", size_bytes=10, parent=""),
-            TenderFileEntry(path="b.pdf", suffix=".pdf", size_bytes=10, parent=""),
+        "scope_items": [
+            {"name": "замена ПКУ 6-10 кВ", "qty": 24, "unit": "шт."},
+            {"name": "монтаж ПКУ 6-10 кВ", "qty": 174, "unit": "шт."},
         ],
+        "scope_meta": {"needs_more_docs": False},
+        "loaded_labels": ["a.pdf", "b.pdf"],
+        "ranked_paths": ["a.pdf", "b.pdf"],
+        "scope_queue": ["a.pdf"],
     }
-    assert route_after_coverage(state) == "expand_docs"
+    assert route_after_scope(state) == "finalize"
 
 
-def test_route_after_coverage_finalizes_when_done() -> None:
-    state = {
-        "expand_done": True,
-        "missing_scope_items": ["ПКУ"],
-        "loaded_labels": ["a.pdf"],
-        "ranked_paths": ["a.pdf"],
-        "catalog_entries": [],
-    }
-    assert route_after_coverage(state) == "finalize"
+def test_scope_has_detailed_list() -> None:
+    assert not scope_has_detailed_list([])
+    assert not scope_has_detailed_list([{"name": "титул", "qty": None}])
+    assert scope_has_detailed_list([{"name": "ПКУ", "qty": 24}])
+    assert scope_has_detailed_list(
+        [{"name": "a", "qty": None}, {"name": "b", "qty": None}]
+    )
