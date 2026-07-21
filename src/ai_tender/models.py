@@ -14,6 +14,23 @@ class Evidence(BaseModel):
     quote: str
     score: float | None = None
     page: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+
+
+class ExtractedRequirement(BaseModel):
+    """Требование, извлечённое LLM из тендерной документации."""
+
+    text: str
+    quote: str
+    file: str
+    location: str
+    page: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    kind: str = "other"  # product | specs | other
+    priority: int = 2
+    confidence: float = Field(default=0.7, ge=0, le=1)
 
 
 class Status(StrEnum):
@@ -53,6 +70,8 @@ class Finding(BaseModel):
     status: Status = Status.uncertain
     explanation: str = ""
     confidence: float = Field(default=0.0, ge=0, le=1)
+    kind: str = "other"  # product | specs | other
+    match_mode: str = ""  # product_first | specs_fallback | specs_only
 
 
 class AnalysisReport(BaseModel):
@@ -68,6 +87,8 @@ class AnalysisReport(BaseModel):
     indexed_files: list[str] = Field(default_factory=list)
     index_reused: bool = False
     elapsed_seconds: float | None = None
+    query_selection: dict = Field(default_factory=dict)
+    extracted_requirements: list[ExtractedRequirement] = Field(default_factory=list)
     report_dir: Path | None = None
 
 
@@ -91,6 +112,20 @@ class Settings(BaseSettings):
     max_tender_queries: int = 15
     max_findings: int = 12
     min_retrieval_score: float = 0.0
+    # Стратегия сопоставления: hybrid | product | specs
+    match_strategy: str = "hybrid"
+    # Product-first: при найденном артикуле не разбирать все ТТХ
+    product_match_confidence: float = 0.55
+    max_specs_when_product_matched: int = 3
+    # Извлечение требований: документ целиком → RAG по эталону → оценка
+    llm_extract_requirements: bool = True
+    max_extract_chars_per_doc: int = 120_000
+    # устаревшие алиасы
+    max_extract_candidates: int = 40
+    extract_batch_size: int = 8
+    llm_select_queries: bool = True
+    max_classify_candidates: int = 40
+    classify_batch_size: int = 12
 
     # LLM prompt prefix (задача оценки)
     user_instruction: str = DEFAULT_USER_INSTRUCTION

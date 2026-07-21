@@ -20,29 +20,9 @@ class DocumentView:
 
 
 def resolve_evidence_path(root: Path | str | None, file_label: str) -> Path | None:
-    """Собирает путь к файлу: абсолютный label или relative к корню корпуса."""
-    label = (file_label or "").strip()
-    if not label or label == "unknown":
-        return None
+    from .anchors import resolve_document_path
 
-    direct = Path(label)
-    if direct.is_file():
-        return direct.resolve()
-
-    if root is None:
-        return None
-
-    base = Path(root).expanduser()
-    candidate = (base / label).resolve()
-    if candidate.is_file():
-        return candidate
-
-    # Windows/posix и поиск по имени, если относительный путь съехал.
-    by_name = list(base.rglob(Path(label).name))
-    files = [path for path in by_name if path.is_file()]
-    if len(files) == 1:
-        return files[0].resolve()
-    return None
+    return resolve_document_path(root, file_label)
 
 
 def highlight_quote(text: str, quote: str) -> str:
@@ -83,11 +63,16 @@ def build_document_view(
     *,
     role: str = "документ",
 ) -> DocumentView:
+    from .anchors import format_location, slice_by_lines
+
     path = resolve_evidence_path(root, evidence.file)
     title = f"{role}: {Path(evidence.file).name}"
-    location = evidence.location or "фрагмент"
-    if evidence.page is not None:
-        location = f"стр. {evidence.page}"
+    location = format_location(
+        evidence.location,
+        page=evidence.page,
+        line_start=evidence.line_start,
+        line_end=evidence.line_end,
+    )
 
     if path is None:
         return DocumentView(
@@ -104,18 +89,33 @@ def build_document_view(
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         page_text, note = _pdf_page_text(path, evidence.page, evidence.quote)
+        body_source = page_text or evidence.quote
+        if evidence.line_start is not None and page_text:
+            body_source = slice_by_lines(
+                page_text,
+                evidence.line_start,
+                evidence.line_end,
+                context=3,
+            )
         return DocumentView(
             title=title,
             path=path,
             location=location,
-            body_html=highlight_quote(page_text or evidence.quote, evidence.quote),
+            body_html=highlight_quote(body_source, evidence.quote),
             note=note,
         )
 
     text, note = _plain_file_text(path)
     if text:
-        # Для больших файлов показываем окно вокруг цитаты.
-        window = _window_around_quote(text, evidence.quote, radius=1200)
+        if evidence.line_start is not None:
+            window = slice_by_lines(
+                text,
+                evidence.line_start,
+                evidence.line_end,
+                context=4,
+            )
+        else:
+            window = _window_around_quote(text, evidence.quote, radius=1200)
         return DocumentView(
             title=title,
             path=path,

@@ -281,7 +281,18 @@ def node_to_evidence(node: BaseNode, score: float | None = None):
         quote=quote,
         score=None if score is None else round(float(score), 4),
         page=_page_from_metadata(meta),
+        line_start=_optional_int(meta.get("line_start")),
+        line_end=_optional_int(meta.get("line_end")),
     )
+
+
+def _optional_int(value) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def indexed_file_paths(nodes: list[BaseNode]) -> list[str]:
@@ -299,17 +310,35 @@ def retrieve_candidates(
     top_k: int,
     min_score: float = 0.0,
 ) -> list[tuple[BaseNode, list[NodeWithScore]]]:
-    """Для каждого запроса (обычно чанк тендера) ищем хиты в индексе эталонов."""
+    """Для каждого запроса (обычно чанк/требование) ищем хиты в индексе эталонов."""
     del min_score  # RRF-score мал; отсечение по абсолютному порогу вводит в заблуждение
-    bm25 = build_bm25_retriever(search_index, top_k)
-    vector_retriever = search_index.as_retriever(similarity_top_k=top_k)
+    queries = [
+        " ".join(node.get_content(metadata_mode="none").split())[:800]
+        for node in query_nodes
+    ]
+    hit_lists = retrieve_for_queries(search_index, queries, top_k=top_k)
     results: list[tuple[BaseNode, list[NodeWithScore]]] = []
-    for query_node in query_nodes:
-        query = query_node.get_content(metadata_mode="none")
-        query = " ".join(query.split())[:800]
-        vector_hits = vector_retriever.retrieve(query)
-        bm25_hits = bm25.retrieve(query)
-        hits = _rrf_fuse([vector_hits, bm25_hits], top_k=top_k)
+    for query_node, hits in zip(query_nodes, hit_lists, strict=True):
         if hits:
             results.append((query_node, hits[:top_k]))
     return results
+
+
+def retrieve_for_queries(
+    search_index: VectorStoreIndex,
+    queries: list[str],
+    top_k: int,
+) -> list[list[NodeWithScore]]:
+    """Hybrid retrieval по списку текстовых запросов (извлечённые требования)."""
+    bm25 = build_bm25_retriever(search_index, top_k)
+    vector_retriever = search_index.as_retriever(similarity_top_k=top_k)
+    output: list[list[NodeWithScore]] = []
+    for raw in queries:
+        query = " ".join((raw or "").split())[:800]
+        if not query:
+            output.append([])
+            continue
+        vector_hits = vector_retriever.retrieve(query)
+        bm25_hits = bm25.retrieve(query)
+        output.append(_rrf_fuse([vector_hits, bm25_hits], top_k=top_k)[:top_k])
+    return output

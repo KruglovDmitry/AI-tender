@@ -6,7 +6,6 @@ from pathlib import Path
 import streamlit as st
 
 from ai_tender.models import (
-    DEFAULT_USER_INSTRUCTION,
     STATUS_LABELS,
     AnalysisReport,
     Evidence,
@@ -268,7 +267,40 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
     st.success(f"Готово за {elapsed}. {cache_note.capitalize()}.")
 
     if report.summary:
-        st.info(report.summary)
+        # st.info поддерживает markdown; двойной пробел+\\n сохраняет переносы.
+        st.info(report.summary.replace("\n", "  \n"))
+
+    qs = report.query_selection or {}
+    truncated = qs.get("truncated_files") or []
+    if truncated:
+        st.warning(
+            "Документ(ы) обрезаны по лимиту длины при extract: "
+            + ", ".join(Path(name).name for name in truncated)
+        )
+    if qs.get("error"):
+        st.warning(f"Extract: fallback из‑за ошибки — {qs['error']}")
+
+    top_reqs = qs.get("top_requirements") or []
+    if top_reqs:
+        with st.expander("Извлечённые требования (топ)"):
+            for item in top_reqs:
+                loc = item.get("location") or ""
+                st.markdown(
+                    f"- **p{item.get('priority', '?')}** "
+                    f"({item.get('confidence', 0):.2f}): {item.get('text', '')}"
+                    + (f"  \n  _{loc}_" if loc else "")
+                )
+
+    if getattr(report, "extracted_requirements", None):
+        with st.expander(
+            f"Все извлечённые требования ({len(report.extracted_requirements)})"
+        ):
+            for index, req in enumerate(report.extracted_requirements, start=1):
+                st.markdown(
+                    f"**{index}. {req.text}**  \n"
+                    f"`{req.location}` · `{Path(req.file).name}`  \n"
+                    f"> {req.quote[:300]}"
+                )
 
     if report.indexed_files:
         with st.expander(f"Эталоны в индексе ({len(report.indexed_files)} файлов)"):
@@ -280,6 +312,7 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
         rows = [
             {
                 "Статус": STATUS_LABELS[item.status.value],
+                "Тип": item.kind or "—",
                 "Требование тендера": item.tender.quote[:200],
                 "Файл тендера": Path(item.tender.file).name,
                 "Эталон": (
@@ -304,6 +337,8 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
                 left, right = st.columns(2)
                 with left:
                     st.markdown("**Тендер**")
+                    if item.query_text and item.query_text != item.tender.quote[:300]:
+                        st.markdown(f"**Требование:** {item.query_text}")
                     st.caption(f"{item.tender.file} · {item.tender.location}")
                     st.write(item.tender.quote)
                     if st.button(
@@ -358,54 +393,34 @@ with st.sidebar:
             type="password",
         )
 
-    embedding_model = st.text_input("Модель embeddings", value=settings.embedding_model)
-    st.caption("Embeddings локально (bge-m3). Индекс эталонов кэшируется на диске.")
-
-    top_k = st.slider("Top-K фрагментов эталона на требование", 1, 10, settings.top_k)
-    max_tender_queries = st.number_input(
-        "Макс. требований из тендера",
-        min_value=5,
-        max_value=50,
-        value=settings.max_tender_queries,
+    strategy_options = {
+        "hybrid": "Гибридный",
+        "product": "По продукту",
+        "specs": "По техсоответствию",
+    }
+    default_strategy = (
+        settings.match_strategy if settings.match_strategy in strategy_options else "hybrid"
     )
-    max_findings = st.number_input(
-        "Макс. строк в результате",
-        min_value=3,
-        max_value=40,
-        value=settings.max_findings,
-    )
-
-    chunk_size = st.number_input(
-        "Размер чанка",
-        min_value=256,
-        max_value=4000,
-        value=settings.chunk_size,
-        step=128,
-    )
-    chunk_overlap = st.number_input(
-        "Overlap чанка",
-        min_value=0,
-        max_value=500,
-        value=settings.chunk_overlap,
-        step=32,
+    match_strategy = st.radio(
+        "Стратегия поиска",
+        options=list(strategy_options.keys()),
+        format_func=lambda key: strategy_options[key],
+        index=list(strategy_options.keys()).index(default_strategy),
+        help=(
+            "Гибридный: сначала артикул/название в эталоне; если нашёл — "
+            "несколько ключевых ТТХ; если нет — полный разбор ТТХ.\n\n"
+            "По продукту: только явные позиции (например МИР С-05…).\n\n"
+            "По техсоответствию: проверка технических требований без акцента на артикул."
+        ),
     )
 
-    st.subheader("Инструкция для LLM")
-    user_instruction = st.text_area(
-        "Задача оценки (префикс промпта)",
-        value=settings.user_instruction or DEFAULT_USER_INSTRUCTION,
-        height=180,
-        help="Этот текст подставляется в промпт перед схемой ответа и данными.",
+    ocr_enabled = st.checkbox(
+        "OCR для сканов PDF",
+        value=settings.ocr_enabled,
     )
-
-    st.subheader("OCR для сканов PDF")
-    ocr_enabled = st.checkbox("Распознавать сканы (Tesseract)", value=settings.ocr_enabled)
-    ocr_languages = st.text_input("Языки OCR", value=settings.ocr_languages)
     ocr_ok, ocr_hint = ocr_status()
     if ocr_enabled and not ocr_ok:
         st.warning(ocr_hint)
-    elif ocr_enabled:
-        st.caption(f"Tesseract: {ocr_hint}")
 
 default_tender = default_tender_path()
 default_assets = default_assets_path()
@@ -456,15 +471,8 @@ if st.button("Начать сравнение", type="primary", width="stretch")
             update={
                 "llm_provider": llm_provider,
                 "llm_model": llm_model,
-                "embedding_model": embedding_model,
-                "top_k": top_k,
-                "max_tender_queries": int(max_tender_queries),
-                "max_findings": int(max_findings),
-                "chunk_size": int(chunk_size),
-                "chunk_overlap": int(chunk_overlap),
-                "user_instruction": user_instruction.strip() or DEFAULT_USER_INSTRUCTION,
+                "match_strategy": match_strategy,
                 "ocr_enabled": ocr_enabled,
-                "ocr_languages": ocr_languages.strip() or "rus+eng",
             }
         )
 
