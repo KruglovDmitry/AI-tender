@@ -23,6 +23,9 @@ class ExtractedRequirement(BaseModel):
 
     text: str
     quote: str
+    # К какому пункту "предмета закупки" относится требование.
+    # Используется для уточнения retrieval и подсказки LLM при оценке.
+    scope_item: str | None = None
     file: str
     location: str
     page: int | None = None
@@ -71,7 +74,6 @@ class Finding(BaseModel):
     explanation: str = ""
     confidence: float = Field(default=0.0, ge=0, le=1)
     kind: str = "other"  # product | specs | other
-    match_mode: str = ""  # product_first | specs_fallback | specs_only
 
 
 class AnalysisReport(BaseModel):
@@ -105,47 +107,24 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_base_url: str = "https://api.openai.com/v1"
 
-    # Retrieval: запросы из тендера → поиск по эталонам
+    # Retrieval / оценка
     top_k: int = 3
     chunk_size: int = 1024
     chunk_overlap: int = 128
     max_tender_queries: int = 15
     max_findings: int = 12
-    min_retrieval_score: float = 0.0
-    # Стратегия сопоставления: hybrid | product | specs
-    match_strategy: str = "hybrid"
-    # Product-first: при найденном артикуле не разбирать все ТТХ
-    product_match_confidence: float = 0.55
-    max_specs_when_product_matched: int = 3
-    # Извлечение требований: документ целиком → RAG по эталону → оценка
-    llm_extract_requirements: bool = True
+
+    # LangGraph: выбор файлов и extract
     max_extract_chars_per_doc: int = 120_000
-    # Выбор тендерных файлов перед extract
-    llm_select_tender_files: bool = True
     max_tender_files_initial: int = 3
     max_tender_files_total: int = 6
-    extract_early_stop: bool = True
-    extract_early_stop_min_specs: int = 2
-    extract_early_stop_min_confidence: float = 0.55
-    # Минимум файлов до остановки extract. Нужен, чтобы не пропускать "главное описание"
-    # когда оно лежит в другом документе (первый слой vs детализация).
-    extract_early_stop_min_files: int = 2
-    # устаревшие алиасы
-    max_extract_candidates: int = 40
-    extract_batch_size: int = 8
-    llm_select_queries: bool = True
-    max_classify_candidates: int = 40
-    classify_batch_size: int = 12
 
-    # LLM prompt prefix (задача оценки)
     user_instruction: str = DEFAULT_USER_INSTRUCTION
 
-    # OCR для PDF-сканов
     ocr_enabled: bool = True
     ocr_languages: str = "rus+eng"
 
     cache_dir: Path = Path("data/cache")
-    output_dir: Path = Path("data/reports")
 
 
 def get_settings() -> Settings:

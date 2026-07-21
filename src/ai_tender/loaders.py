@@ -1,7 +1,9 @@
-"""Загрузка документов: архивы + LlamaIndex SimpleDirectoryReader + OCR."""
+"""Загрузка документов: архивы + LlamaIndex SimpleDirectoryReader + OCR + .doc."""
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,7 +11,6 @@ from pathlib import Path
 from llama_index.core import Document, SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 
-from .legacy_office import LEGACY_WORD_SUFFIXES, extract_doc_text
 from .ocr import extract_pdf_with_ocr, ocr_status
 from .utils import ARCHIVES, expand_archives
 
@@ -24,6 +25,7 @@ SUPPORTED_SUFFIXES = {
     ".xlsx",
     ".xls",
 }
+LEGACY_WORD_SUFFIXES = {".doc", ".dot"}
 READABLE_SUFFIXES = SUPPORTED_SUFFIXES | LEGACY_WORD_SUFFIXES
 
 IGNORED_BASENAMES = frozenset({"thumbs.db", "desktop.ini", ".ds_store"})
@@ -255,6 +257,49 @@ def _load_with_llamaindex(
         warnings.append(f"Файл не попал в индекс (не прочитан): {label}")
 
     return documents
+
+
+def extract_doc_text(path: Path, *, timeout_sec: int = 90) -> tuple[str, str | None]:
+    """Извлекает текст из Word 97–2003 (.doc). Возвращает (text, error)."""
+    try:
+        import sharepoint2text
+
+        result = next(sharepoint2text.read_file(path))
+        text = (result.get_full_text() or "").strip()
+        if text:
+            return text, None
+        return "", "Пустой текст после sharepoint-to-text"
+    except ImportError:
+        pass
+    except StopIteration:
+        return "", "sharepoint-to-text: пустой результат"
+    except Exception as exc:
+        return "", f"sharepoint-to-text: {exc}"
+
+    antiword = shutil.which("antiword")
+    if antiword:
+        try:
+            proc = subprocess.run(
+                [antiword, "-m", "UTF-8.txt", str(path)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_sec,
+                check=False,
+            )
+            text = (proc.stdout or "").strip()
+            if proc.returncode == 0 and text:
+                return text, None
+            err = (proc.stderr or "").strip() or f"antiword: код {proc.returncode}"
+            return text, err if not text else None
+        except Exception as exc:
+            return "", f"antiword: {exc}"
+
+    return (
+        "",
+        "Формат .doc: установите пакет sharepoint-to-text (pip) или antiword в PATH",
+    )
 
 
 def _load_legacy_doc_files(

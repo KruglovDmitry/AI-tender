@@ -203,7 +203,7 @@ def _read_text_for_anchor(path: Path) -> str:
         except Exception:
             return ""
     if suffix in {".doc", ".dot"}:
-        from .legacy_office import extract_doc_text
+        from .loaders import extract_doc_text
 
         text, _ = extract_doc_text(path)
         return text

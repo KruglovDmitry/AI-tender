@@ -1,18 +1,14 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 from ai_tender.doc_select import (
     build_catalog_from_inventory,
-    extraction_is_sufficient,
     format_catalog_tree,
     ranked_file_paths,
     select_files_heuristic,
     select_tender_files_by_llm,
 )
-from ai_tender.loaders import TenderInventory, inventory_tender_folder
-from ai_tender.models import ExtractedRequirement
+from ai_tender.loaders import inventory_tender_folder
 
 
 def _entry(path: str, suffix: str = ".pdf", size: int = 1024) -> object:
@@ -40,58 +36,11 @@ def test_heuristic_prefers_tz_over_contract() -> None:
 def test_ranked_file_paths_sorts_by_priority() -> None:
     selection = {
         "files": [
-            {"path": "b.pdf", "priority": 2},
-            {"path": "a.pdf", "priority": 1},
+            {"path": "b.pdf", "priority": 2, "scope_level": 2},
+            {"path": "a.pdf", "priority": 1, "scope_level": 1},
         ]
     }
     assert ranked_file_paths(selection) == ["a.pdf", "b.pdf"]
-
-
-def test_extraction_is_sufficient_with_product_and_spec() -> None:
-    items = [
-        ExtractedRequirement(
-            text="МИР С-05",
-            quote="МИР",
-            file="a.pdf",
-            location="док",
-            kind="product",
-            confidence=0.8,
-        ),
-        ExtractedRequirement(
-            text="230 В",
-            quote="230",
-            file="a.pdf",
-            location="док",
-            kind="specs",
-            confidence=0.7,
-        ),
-    ]
-    assert extraction_is_sufficient(items, min_specs=2)
-
-
-def test_extraction_is_sufficient_needs_enough_specs_without_product() -> None:
-    items = [
-        ExtractedRequirement(
-            text="230 В",
-            quote="230",
-            file="a.pdf",
-            location="док",
-            kind="specs",
-            confidence=0.7,
-        ),
-    ]
-    assert not extraction_is_sufficient(items, min_specs=2)
-    items.append(
-        ExtractedRequirement(
-            text="класс 1.0",
-            quote="1.0",
-            file="a.pdf",
-            location="док",
-            kind="specs",
-            confidence=0.6,
-        )
-    )
-    assert extraction_is_sufficient(items, min_specs=2)
 
 
 def test_select_by_llm_parses_response() -> None:
@@ -100,11 +49,10 @@ def test_select_by_llm_parses_response() -> None:
         _entry("договор.docx", ".docx"),
     ]
     llm = MagicMock()
-    llm.complete.return_value = MagicMock(
-        text=(
-            '{"files": [{"path": "ТЗ/основное.pdf", "priority": 1, "role": "tz", '
-            '"reason": "главное ТЗ"}], "skip": [{"path": "договор.docx", "reason": "шаблон"}]}'
-        )
+    llm.complete.return_value = (
+        '{"files": [{"path": "ТЗ/основное.pdf", "priority": 1, "scope_level": 1, '
+        '"role": "tz_main", "reason": "главное ТЗ"}], '
+        '"skip": [{"path": "договор.docx", "reason": "шаблон"}]}'
     )
     result = select_tender_files_by_llm(entries, "tree", llm, max_files=3)
     assert result["files"][0]["path"] == "ТЗ/основное.pdf"
@@ -131,8 +79,8 @@ def test_build_catalog_from_inventory(tmp_path: Path) -> None:
 def test_select_by_llm_rejects_unknown_paths() -> None:
     entries = [_entry("real.pdf")]
     llm = MagicMock()
-    llm.complete.return_value = MagicMock(
-        text='{"files": [{"path": "missing.pdf", "priority": 1}], "skip": []}'
+    llm.complete.return_value = (
+        '{"files": [{"path": "missing.pdf", "priority": 1}], "skip": []}'
     )
     result = select_tender_files_by_llm(entries, "tree", llm, max_files=3)
     assert result["files"] == []

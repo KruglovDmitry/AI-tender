@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from llama_index.core.llms import LLM
 
+from .providers import parse_llm_json
 from .loaders import READABLE_SUFFIXES, TenderInventory, inventory_tender_folder
-from .models import ExtractedRequirement
 
 SELECT_SCHEMA_HINT = """
 Верни ТОЛЬКО JSON-объект:
@@ -47,25 +46,6 @@ class TenderFileEntry:
     suffix: str
     size_bytes: int
     parent: str
-
-
-def _parse_json(content: str) -> dict:
-    text = content.strip()
-    if text.startswith("```"):
-        text = (
-            text.removeprefix("```json")
-            .removeprefix("```")
-            .removesuffix("```")
-            .strip()
-        )
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        text = text[start : end + 1]
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError("Ответ LLM должен быть JSON-объектом")
-    return data
 
 
 def build_catalog_from_inventory(inventory: TenderInventory) -> list[TenderFileEntry]:
@@ -251,7 +231,7 @@ def select_tender_files_by_llm(
         f"СПИСОК ФАЙЛОВ:\n{catalog_list}"
     )
     response = llm.complete(prompt)
-    data = _parse_json(str(response))
+    data = parse_llm_json(str(response))
 
     files_out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -367,22 +347,3 @@ def ranked_file_paths(selection: dict[str, Any]) -> list[str]:
         ),
     )
     return [str(item["path"]) for item in ranked if item.get("path")]
-
-
-def extraction_is_sufficient(
-    items: list[ExtractedRequirement],
-    *,
-    min_specs: int = 2,
-    min_confidence: float = 0.55,
-) -> bool:
-    """Достаточно ли требований, чтобы остановить последовательный extract."""
-    good = [item for item in items if item.confidence >= min_confidence]
-    products = [item for item in good if item.kind == "product"]
-    specs = [item for item in good if item.kind == "specs"]
-    if products and specs:
-        return True
-    if len(specs) >= min_specs:
-        return True
-    if products and len(good) >= 2:
-        return True
-    return False

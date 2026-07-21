@@ -161,30 +161,6 @@ def load_or_build_assets_index(
     return index, nodes, warnings, False
 
 
-def load_tender_nodes(
-    tender_path: Path,
-    chunk_size: int,
-    chunk_overlap: int,
-    ocr_enabled: bool = True,
-    ocr_languages: str = "rus+eng",
-) -> tuple[list[BaseNode], list[str]]:
-    """Тендер только как источник запросов — векторный индекс не нужен."""
-    documents, warnings = load_documents(
-        tender_path,
-        corpus="tender",
-        technical_only=True,
-        ocr_enabled=ocr_enabled,
-        ocr_languages=ocr_languages,
-    )
-    if not documents:
-        details = "; ".join(warnings) if warnings else "файлы не найдены или пусты"
-        raise ValueError(f"Не удалось извлечь документы из {tender_path}. {details}")
-    nodes = split_documents(documents, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    if not nodes:
-        raise ValueError(f"После разбиения на чанки документов нет: {tender_path}")
-    return nodes, warnings
-
-
 def _rrf_fuse(
     result_lists: list[list[NodeWithScore]],
     top_k: int,
@@ -251,10 +227,6 @@ def select_query_nodes(nodes: list[BaseNode], limit: int) -> list[BaseNode]:
     return [pool[int(index * step)] for index in range(limit)]
 
 
-# Обратная совместимость для тестов/импортов.
-select_asset_query_nodes = select_query_nodes
-
-
 def _page_from_metadata(meta: dict) -> int | None:
     raw = meta.get("page_number")
     if raw is None:
@@ -304,26 +276,6 @@ def indexed_file_paths(nodes: list[BaseNode]) -> list[str]:
         if node.metadata
     }
     return sorted(path for path in files if path and path != "None")
-
-
-def retrieve_candidates(
-    query_nodes: list[BaseNode],
-    search_index: VectorStoreIndex,
-    top_k: int,
-    min_score: float = 0.0,
-) -> list[tuple[BaseNode, list[NodeWithScore]]]:
-    """Для каждого запроса (обычно чанк/требование) ищем хиты в индексе эталонов."""
-    del min_score  # RRF-score мал; отсечение по абсолютному порогу вводит в заблуждение
-    queries = [
-        " ".join(node.get_content(metadata_mode="none").split())[:800]
-        for node in query_nodes
-    ]
-    hit_lists = retrieve_for_queries(search_index, queries, top_k=top_k)
-    results: list[tuple[BaseNode, list[NodeWithScore]]] = []
-    for query_node, hits in zip(query_nodes, hit_lists, strict=True):
-        if hits:
-            results.append((query_node, hits[:top_k]))
-    return results
 
 
 def retrieve_for_queries(

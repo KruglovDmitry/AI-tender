@@ -5,9 +5,9 @@ LlamaIndex RAG для оценки применимости эталонной �
 
 ## Как работает
 
-1. Документы читаются через LlamaIndex `SimpleDirectoryReader` (PDF, DOCX, XLSX, CSV, TXT, MD); ZIP/RAR распаковываются перед чтением.
+1. Документы читаются через LlamaIndex `SimpleDirectoryReader` (PDF, DOCX, DOC, XLSX, CSV, TXT, MD); ZIP/RAR распаковываются перед чтением.
 2. Строится векторный индекс **эталонов** (`BAAI/bge-m3`, локально) и кэшируется на диске.
-3. Из тендера берутся требования (чанки) как запросы.
+3. Тендер обрабатывается через **LangGraph** (scope-first): сначала предмет закупки (перечень), затем требования к пунктам, с дочитыванием доп. файлов при необходимости.
 4. По эталону идёт **hybrid retrieval** (vector + BM25): «это требование ↔ какие фрагменты эталона».
 5. Пары отдаются в LLM с пользовательской инструкцией; в UI показываются только
    наиболее значимые совпадения и короткое резюме по счётчикам статусов.
@@ -59,15 +59,16 @@ UI: `streamlit run app.py --server.fileWatcherType none`.
 
 ## Переменные окружения
 
-См. `.env.example`. Ключевые:
+См. `.env.example`. Обычно достаточно:
 
-- `AI_TENDER_LLM_PROVIDER=deepseek|openai`
-- `AI_TENDER_LLM_MODEL`
-- `AI_TENDER_EMBEDDING_MODEL=BAAI/bge-m3`
+- `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`
+- `AI_TENDER_LLM_PROVIDER` / `AI_TENDER_LLM_MODEL`
+- `AI_TENDER_MAX_TENDER_FILES_INITIAL` / `AI_TENDER_MAX_TENDER_FILES_TOTAL`
 - `AI_TENDER_MAX_TENDER_QUERIES` / `AI_TENDER_MAX_FINDINGS`
 - `AI_TENDER_OCR_ENABLED` / `AI_TENDER_OCR_LANGUAGES`
-- `UNRAR_TOOL` / `TESSERACT_CMD`
-- `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`
+- при необходимости: `UNRAR_TOOL`, `TESSERACT_CMD`
+
+Остальные параметры (эмбеддинги, chunk size, top-k, cache) имеют значения по умолчанию в коде.
 
 ### RAR и OCR (Windows)
 

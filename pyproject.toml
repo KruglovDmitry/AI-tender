@@ -27,6 +27,7 @@ dependencies = [
   "rarfile",
   "sentence-transformers",
   "sharepoint-to-text",
+  "langgraph>=0.2",
   "streamlit",
 ]
 

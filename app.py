@@ -12,7 +12,7 @@ from ai_tender.models import (
     get_settings,
 )
 from ai_tender.ocr import ocr_status
-from ai_tender.pipeline import analyze
+from ai_tender.graph import analyze
 from ai_tender.viewer import build_document_view
 
 st.set_page_config(page_title="AI Tender", page_icon="📋", layout="wide")
@@ -295,19 +295,32 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
                     st.markdown(f"- `{Path(item.get('path', '')).name}` — {item.get('reason', '')}")
             if doc_sel.get("error"):
                 st.warning(f"Выбор файлов: fallback — {doc_sel['error']}")
-    if qs.get("early_stopped"):
-        st.caption(
-            f"Extract остановлен досрочно после {len(qs.get('files_processed') or [])} файлов "
-            "(достаточно требований)."
-        )
-    truncated = qs.get("truncated_files") or []
+
+    if qs.get("scope_first") and qs.get("scope"):
+        scope = qs.get("scope") or {}
+        coverage = qs.get("scope_coverage") or {}
+        with st.expander("Предмет закупки (Scope)"):
+            st.caption(
+                f"confidence={scope.get('overall_confidence', '—')} · "
+                f"needs_more_docs={scope.get('needs_more_docs', False)}"
+            )
+            items = scope.get("items") or []
+            if items:
+                for s in items:
+                    st.markdown(f"- {s}")
+            missing = coverage.get("missing") or []
+            if missing:
+                st.warning(f"Не покрыты items: {len(missing)}")
+            if scope.get("missing_signals"):
+                st.info(scope.get("missing_signals"))
+
+    req_stats = qs.get("requirements_stats") or {}
+    truncated = req_stats.get("truncated_files") or []
     if truncated:
         st.warning(
             "Документ(ы) обрезаны по лимиту длины при extract: "
             + ", ".join(Path(name).name for name in truncated)
         )
-    if qs.get("error"):
-        st.warning(f"Extract: fallback из‑за ошибки — {qs['error']}")
 
     top_reqs = qs.get("top_requirements") or []
     if top_reqs:
@@ -422,27 +435,6 @@ with st.sidebar:
             type="password",
         )
 
-    strategy_options = {
-        "hybrid": "Гибридный",
-        "product": "По продукту",
-        "specs": "По техсоответствию",
-    }
-    default_strategy = (
-        settings.match_strategy if settings.match_strategy in strategy_options else "hybrid"
-    )
-    match_strategy = st.radio(
-        "Стратегия поиска",
-        options=list(strategy_options.keys()),
-        format_func=lambda key: strategy_options[key],
-        index=list(strategy_options.keys()).index(default_strategy),
-        help=(
-            "Гибридный: сначала артикул/название в эталоне; если нашёл — "
-            "несколько ключевых ТТХ; если нет — полный разбор ТТХ.\n\n"
-            "По продукту: только явные позиции (например МИР С-05…).\n\n"
-            "По техсоответствию: проверка технических требований без акцента на артикул."
-        ),
-    )
-
     ocr_enabled = st.checkbox(
         "OCR для сканов PDF",
         value=settings.ocr_enabled,
@@ -500,7 +492,6 @@ if st.button("Начать сравнение", type="primary", width="stretch")
             update={
                 "llm_provider": llm_provider,
                 "llm_model": llm_model,
-                "match_strategy": match_strategy,
                 "ocr_enabled": ocr_enabled,
             }
         )
