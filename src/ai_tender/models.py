@@ -120,6 +120,16 @@ class Settings(BaseSettings):
     # Извлечение требований: документ целиком → RAG по эталону → оценка
     llm_extract_requirements: bool = True
     max_extract_chars_per_doc: int = 120_000
+    # Выбор тендерных файлов перед extract
+    llm_select_tender_files: bool = True
+    max_tender_files_initial: int = 3
+    max_tender_files_total: int = 6
+    extract_early_stop: bool = True
+    extract_early_stop_min_specs: int = 2
+    extract_early_stop_min_confidence: float = 0.55
+    # Минимум файлов до остановки extract. Нужен, чтобы не пропускать "главное описание"
+    # когда оно лежит в другом документе (первый слой vs детализация).
+    extract_early_stop_min_files: int = 2
     # устаревшие алиасы
     max_extract_candidates: int = 40
     extract_batch_size: int = 8

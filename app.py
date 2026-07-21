@@ -271,6 +271,35 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
         st.info(report.summary.replace("\n", "  \n"))
 
     qs = report.query_selection or {}
+    doc_sel = qs.get("doc_selection") or {}
+    if doc_sel.get("selected"):
+        with st.expander(
+            f"Выбор файлов тендера ({len(doc_sel.get('loaded') or [])} загружено "
+            f"из {doc_sel.get('catalog_count', '?')})"
+        ):
+            st.caption(f"Режим: {doc_sel.get('mode', '—')}")
+            for item in doc_sel.get("selected") or []:
+                path = item.get("path", "")
+                loaded = path in (doc_sel.get("loaded") or [])
+                mark = "✓" if loaded else "·"
+                reason = item.get("reason", "")
+                st.markdown(
+                    f"{mark} **p{item.get('priority', '?')}** `{Path(path).name}` "
+                    f"({item.get('role', '—')})"
+                    + (f" — {reason}" if reason else "")
+                )
+            skipped = doc_sel.get("skipped") or []
+            if skipped:
+                st.markdown("**Пропущены:**")
+                for item in skipped[:12]:
+                    st.markdown(f"- `{Path(item.get('path', '')).name}` — {item.get('reason', '')}")
+            if doc_sel.get("error"):
+                st.warning(f"Выбор файлов: fallback — {doc_sel['error']}")
+    if qs.get("early_stopped"):
+        st.caption(
+            f"Extract остановлен досрочно после {len(qs.get('files_processed') or [])} файлов "
+            "(достаточно требований)."
+        )
     truncated = qs.get("truncated_files") or []
     if truncated:
         st.warning(

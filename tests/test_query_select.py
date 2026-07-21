@@ -106,6 +106,47 @@ def test_dedupe_requirements() -> None:
     assert len(dedupe_requirements(items, limit=5)) == 1
 
 
+def test_extract_early_stop_skips_remaining_files() -> None:
+    from ai_tender.query_select import extract_tender_requirements_from_documents
+
+    class FakeLLM:
+        calls = 0
+
+        def complete(self, prompt: str) -> object:
+            FakeLLM.calls += 1
+            if "a.pdf" in prompt:
+                body = (
+                    '{"requirements": ['
+                    '{"text": "МИР С-05", "quote": "МИР С-05", "kind": "product", '
+                    '"priority": 3, "confidence": 0.9},'
+                    '{"text": "230 В", "quote": "230 В", "kind": "specs", '
+                    '"priority": 3, "confidence": 0.8}'
+                    "]}"
+                )
+            else:
+                body = '{"requirements": [{"text": "лишнее", "quote": "лишнее", "kind": "other"}]}'
+            return type("R", (), {"text": body})()
+
+    docs = [
+        Document(text="МИР С-05\n230 В", metadata={"file_path": "a.pdf"}),
+        Document(text="шум", metadata={"file_path": "b.pdf"}),
+    ]
+    FakeLLM.calls = 0
+    selected, stats = extract_tender_requirements_from_documents(
+        docs,
+        limit=10,
+        llm=FakeLLM(),
+        use_llm=True,
+        file_order=["a.pdf", "b.pdf"],
+        early_stop=True,
+        early_stop_min_specs=1,
+        early_stop_min_files=1,
+    )
+    assert FakeLLM.calls == 1
+    assert stats["early_stopped"] is True
+    assert len(selected) >= 2
+
+
 def test_dedupe_keeps_products_first() -> None:
     items = [
         ExtractedRequirement(

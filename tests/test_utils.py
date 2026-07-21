@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from docx import Document
 
-from ai_tender.loaders import load_documents
+from ai_tender.loaders import is_ignored_file, load_documents
 from ai_tender.ocr import ocr_status
 from ai_tender.utils import configure_rarfile, expand_archives, find_unrar_tool, unpack_zip
 
@@ -53,6 +53,38 @@ def test_load_documents_reads_docx(tmp_path: Path) -> None:
     text = " ".join(doc.text for doc in docs)
     assert "класс точности" in text
     assert "IP54" in text
+
+
+def test_ignored_files_are_not_warned(tmp_path: Path) -> None:
+    (tmp_path / "Thumbs.db").write_bytes(b"junk")
+    (tmp_path / "нормальный.txt").write_text("достаточно длинный текст документа", encoding="utf-8")
+
+    docs, warnings = load_documents(tmp_path, corpus="tender")
+
+    assert any("достаточно длинный" in doc.text for doc in docs)
+    assert not any("Thumbs.db" in warning for warning in warnings)
+
+
+def test_load_documents_reads_doc_with_mock(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "протокол.doc"
+    path.write_bytes(b"fake-doc-bytes")
+
+    def fake_extract_doc_text(file_path: Path, **kwargs: object) -> tuple[str, str | None]:
+        return "Требование из legacy doc: класс точности 1.0.", None
+
+    monkeypatch.setattr("ai_tender.loaders.extract_doc_text", fake_extract_doc_text)
+
+    docs, warnings = load_documents(tmp_path, corpus="tender")
+
+    assert not warnings
+    assert any("класс точности" in doc.text for doc in docs)
+    assert docs[0].metadata["file_path"] == "протокол.doc"
+
+
+def test_is_ignored_file() -> None:
+    assert is_ignored_file("архив/Thumbs.db")
+    assert is_ignored_file("~$документ.docx")
+    assert not is_ignored_file("ТЗ/протокол.doc")
 
 
 def test_missing_folder_is_rejected(tmp_path: Path) -> None:

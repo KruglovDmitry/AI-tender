@@ -202,6 +202,11 @@ def _read_text_for_anchor(path: Path) -> str:
             return docx2txt.process(str(path)) or ""
         except Exception:
             return ""
+    if suffix in {".doc", ".dot"}:
+        from .legacy_office import extract_doc_text
+
+        text, _ = extract_doc_text(path)
+        return text
     if suffix == ".pdf":
         try:
             import fitz

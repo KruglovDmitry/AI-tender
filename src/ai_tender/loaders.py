@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from llama_index.core import Document, SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 
+from .legacy_office import LEGACY_WORD_SUFFIXES, extract_doc_text
 from .ocr import extract_pdf_with_ocr, ocr_status
 from .utils import ARCHIVES, expand_archives
 
@@ -22,48 +24,117 @@ SUPPORTED_SUFFIXES = {
     ".xlsx",
     ".xls",
 }
+READABLE_SUFFIXES = SUPPORTED_SUFFIXES | LEGACY_WORD_SUFFIXES
+
+IGNORED_BASENAMES = frozenset({"thumbs.db", "desktop.ini", ".ds_store"})
+IGNORED_NAME_PREFIXES = ("~$",)
+
+TECHNICAL_MARKERS = ("тз", "техническ", "извещение")
+
+
+def is_ignored_file(label: str) -> bool:
+    name = Path(label).name.lower()
+    if name in IGNORED_BASENAMES:
+        return True
+    return any(name.startswith(prefix.lower()) for prefix in IGNORED_NAME_PREFIXES)
+
+
+@dataclass
+class TenderInventory:
+    """Распакованные пути тендерных файлов; temp_dirs нужно освободить через cleanup()."""
+
+    work_items: list[tuple[Path, str]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    _temp_dirs: list[tempfile.TemporaryDirectory[str]] = field(default_factory=list)
+
+    def cleanup(self) -> None:
+        for temp in self._temp_dirs:
+            temp.cleanup()
+        self._temp_dirs.clear()
+
+    def __enter__(self) -> TenderInventory:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.cleanup()
+
+
+def inventory_tender_folder(
+    folder: Path,
+    *,
+    technical_only: bool = False,
+    only_labels: set[str] | None = None,
+) -> TenderInventory:
+    if not folder.is_dir():
+        raise ValueError(f"Папка не найдена: {folder}")
+
+    warnings: list[str] = []
+    temp_dirs: list[tempfile.TemporaryDirectory[str]] = []
+    root_files = [
+        (path, path.relative_to(folder).as_posix())
+        for path in folder.rglob("*")
+        if path.is_file()
+    ]
+    work_items = expand_archives(root_files, temp_dirs, warnings)
+    work_items = [item for item in work_items if not is_ignored_file(item[1])]
+
+    if technical_only:
+        preferred = [
+            item
+            for item in work_items
+            if any(marker in item[1].lower() for marker in TECHNICAL_MARKERS)
+        ]
+        if preferred:
+            work_items = preferred
+
+    if only_labels is not None:
+        work_items = [item for item in work_items if item[1] in only_labels]
+
+    return TenderInventory(work_items=work_items, warnings=warnings, _temp_dirs=temp_dirs)
 
 
 def load_documents(
     folder: Path,
     corpus: str,
     technical_only: bool = False,
+    only_labels: set[str] | None = None,
+    inventory: TenderInventory | None = None,
     ocr_enabled: bool = True,
     ocr_languages: str = "rus+eng",
 ) -> tuple[list[Document], list[str]]:
-    if not folder.is_dir():
-        raise ValueError(f"Папка не найдена: {folder}")
+    owns_inventory = inventory is None
+    if inventory is None:
+        inventory = inventory_tender_folder(
+            folder,
+            technical_only=technical_only,
+            only_labels=only_labels,
+        )
 
-    warnings: list[str] = []
-    temp_dirs: list[tempfile.TemporaryDirectory[str]] = []
+    warnings: list[str] = list(inventory.warnings)
     documents: list[Document] = []
 
     try:
-        root_files = [
-            (path, path.relative_to(folder).as_posix())
-            for path in folder.rglob("*")
-            if path.is_file()
-        ]
-        work_items = expand_archives(root_files, temp_dirs, warnings)
-
-        if technical_only:
-            preferred = [
-                item
-                for item in work_items
-                if any(m in item[1].lower() for m in ("тз", "техническ", "извещение"))
-            ]
-            if preferred:
-                work_items = preferred
+        work_items = list(inventory.work_items)
+        if only_labels is not None and owns_inventory:
+            work_items = [item for item in work_items if item[1] in only_labels]
 
         reader_files = [
             (path, label)
             for path, label in work_items
             if path.suffix.lower() in SUPPORTED_SUFFIXES
         ]
+        legacy_doc_files = [
+            (path, label)
+            for path, label in work_items
+            if path.suffix.lower() in LEGACY_WORD_SUFFIXES
+        ]
         for path, label in work_items:
             suffix = path.suffix.lower()
-            if suffix not in SUPPORTED_SUFFIXES and suffix not in ARCHIVES:
-                warnings.append(f"Формат пропущен: {label}")
+            if suffix in READABLE_SUFFIXES or suffix in ARCHIVES:
+                continue
+            if is_ignored_file(label):
+                continue
+            warnings.append(f"Формат пропущен: {label}")
 
         if reader_files:
             documents.extend(
@@ -75,9 +146,11 @@ def load_documents(
                     ocr_languages=ocr_languages,
                 )
             )
+        if legacy_doc_files:
+            documents.extend(_load_legacy_doc_files(legacy_doc_files, corpus, warnings))
     finally:
-        for temp in temp_dirs:
-            temp.cleanup()
+        if owns_inventory:
+            inventory.cleanup()
 
     return documents, warnings
 
@@ -181,6 +254,34 @@ def _load_with_llamaindex(
     for label in sorted(missing):
         warnings.append(f"Файл не попал в индекс (не прочитан): {label}")
 
+    return documents
+
+
+def _load_legacy_doc_files(
+    files: list[tuple[Path, str]],
+    corpus: str,
+    warnings: list[str],
+) -> list[Document]:
+    documents: list[Document] = []
+    for path, label in files:
+        text, error = extract_doc_text(path)
+        if text and len(text.strip()) >= 20:
+            documents.append(
+                Document(
+                    text=text,
+                    metadata={
+                        "file_name": Path(label).name,
+                        "file_path": label,
+                        "corpus": corpus,
+                        "location": "документ",
+                    },
+                )
+            )
+            continue
+        if error:
+            warnings.append(f"Не удалось прочитать {label}: {error}")
+        else:
+            warnings.append(f"Пустой .doc: {label}")
     return documents
 
 

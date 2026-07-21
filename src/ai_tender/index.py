@@ -46,6 +46,8 @@ def folder_fingerprint(folder: Path) -> str:
         if path.suffix.lower() not in {
             ".pdf",
             ".docx",
+            ".doc",
+            ".dot",
             ".xlsx",
             ".xls",
             ".txt",

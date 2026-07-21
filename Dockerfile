@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-eng \
     p7zip-full \
     unrar-free \
+    antiword \
     && rm -rf /var/lib/apt/lists/* \
     && tesseract --list-langs
 

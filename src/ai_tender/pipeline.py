@@ -9,6 +9,7 @@ from .index import (
     node_to_evidence,
     retrieve_for_queries,
 )
+from .doc_select import ranked_file_paths, select_tender_files
 from .loaders import load_documents
 from .models import AnalysisReport, ExtractedRequirement, Settings, get_settings
 from .providers import assess_findings, build_compact_summary, build_llm, select_important_findings
@@ -80,25 +81,86 @@ def analyze(
         0.3,
     )
 
-    update("Чтение тендерной документации", 0.35)
-    tender_documents, tender_warnings = load_documents(
-        tender_path,
-        corpus="tender",
-        technical_only=True,
-        ocr_enabled=settings.ocr_enabled,
-        ocr_languages=settings.ocr_languages,
-    )
-
-    use_extract = settings.llm_extract_requirements and settings.llm_select_queries
-    update("Извлечение требований из документов целиком (LLM)", 0.45)
+    update("Каталог и выбор файлов тендера", 0.35)
     llm = build_llm(settings)
-    requirements, query_selection = extract_tender_requirements_from_documents(
-        tender_documents,
-        settings.max_tender_queries,
-        llm=llm,
-        use_llm=use_extract,
-        max_chars_per_doc=settings.max_extract_chars_per_doc,
-    )
+    use_extract = settings.llm_extract_requirements and settings.llm_select_queries
+    use_doc_select = settings.llm_select_tender_files and use_extract
+
+    tender_inventory = None
+    doc_selection: dict = {}
+    ranked_paths: list[str] = []
+
+    try:
+        if use_doc_select:
+            tender_inventory, _catalog_entries, doc_selection = select_tender_files(
+                tender_path,
+                llm,
+                use_llm=True,
+                max_files=settings.max_tender_files_total,
+            )
+            ranked_paths = ranked_file_paths(doc_selection)
+            update(
+                (
+                    f"Выбрано {len(ranked_paths)} из {doc_selection.get('catalog_count', 0)} "
+                    f"файлов ({doc_selection.get('mode', 'llm')})"
+                ),
+                0.38,
+            )
+            update(f"Чтение выбранных файлов ({len(ranked_paths)})", 0.4)
+            tender_documents, tender_warnings = load_documents(
+                tender_path,
+                corpus="tender",
+                inventory=tender_inventory,
+                only_labels=set(ranked_paths),
+                ocr_enabled=settings.ocr_enabled,
+                ocr_languages=settings.ocr_languages,
+            )
+        else:
+            update("Чтение тендерной документации (эвристика)", 0.38)
+            tender_documents, tender_warnings = load_documents(
+                tender_path,
+                corpus="tender",
+                technical_only=True,
+                ocr_enabled=settings.ocr_enabled,
+                ocr_languages=settings.ocr_languages,
+            )
+            ranked_paths = sorted(
+                {
+                    str(doc.metadata.get("file_path") or doc.metadata.get("file_name") or "")
+                    for doc in tender_documents
+                }
+                - {""}
+            )
+
+        update("Извлечение требований из документов (LLM)", 0.45)
+        requirements, query_selection = extract_tender_requirements_from_documents(
+            tender_documents,
+            settings.max_tender_queries,
+            llm=llm,
+            use_llm=use_extract,
+            max_chars_per_doc=settings.max_extract_chars_per_doc,
+            file_order=ranked_paths or None,
+            early_stop=settings.extract_early_stop and use_doc_select,
+            early_stop_min_specs=settings.extract_early_stop_min_specs,
+            early_stop_min_confidence=settings.extract_early_stop_min_confidence,
+            early_stop_min_files=settings.extract_early_stop_min_files,
+            max_files_to_process=(
+                settings.max_tender_files_total if use_doc_select else None
+            ),
+        )
+        if doc_selection:
+            query_selection["doc_selection"] = {
+                "mode": doc_selection.get("mode"),
+                "catalog_count": doc_selection.get("catalog_count"),
+                "selected": doc_selection.get("files"),
+                "skipped": doc_selection.get("skip"),
+                "loaded": ranked_paths,
+            }
+            if doc_selection.get("error"):
+                query_selection["doc_selection"]["error"] = doc_selection["error"]
+    finally:
+        if tender_inventory is not None:
+            tender_inventory.cleanup()
     requirements = refine_requirement_anchors(requirements, tender_path)
     products, specs = split_products_and_specs(requirements)
     query_selection["strategy"] = strategy

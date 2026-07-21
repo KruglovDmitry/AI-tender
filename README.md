@@ -85,5 +85,5 @@ $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
 - Высокий retrieval score ≠ юридическое соответствие; финальную оценку даёт LLM по цитатам.
 - PDF без текста: включите OCR и установите Tesseract (rus+eng).
 - RAR без WinRAR/7-Zip не распакуется — см. `UNRAR_TOOL`.
-- Legacy `.doc` может читаться нестабильно.
+- Legacy `.doc` читается через `sharepoint-to-text` (локально) или `antiword` (Docker/Linux).
 - Фрагменты уходят в выбранный LLM API — учитывайте политику данных.

@@ -1,0 +1,138 @@
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from ai_tender.doc_select import (
+    build_catalog_from_inventory,
+    extraction_is_sufficient,
+    format_catalog_tree,
+    ranked_file_paths,
+    select_files_heuristic,
+    select_tender_files_by_llm,
+)
+from ai_tender.loaders import TenderInventory, inventory_tender_folder
+from ai_tender.models import ExtractedRequirement
+
+
+def _entry(path: str, suffix: str = ".pdf", size: int = 1024) -> object:
+    from ai_tender.doc_select import TenderFileEntry
+
+    parent = Path(path).parent.as_posix()
+    if parent == ".":
+        parent = ""
+    return TenderFileEntry(path=path, suffix=suffix, size_bytes=size, parent=parent)
+
+
+def test_heuristic_prefers_tz_over_contract() -> None:
+    entries = [
+        _entry("Приложение №2 Проект договора.docx", ".docx"),
+        _entry("Приложение №1 Техническое задание/ТЗ ФЗ-522.pdf"),
+        _entry("Извещение по конкурсу.docx", ".docx"),
+        _entry("Приложения к ТЗ/Расчет НМЦ.pdf"),
+    ]
+    result = select_files_heuristic(entries, max_files=2)
+    paths = [item["path"] for item in result["files"]]
+    assert "Приложение №1 Техническое задание/ТЗ ФЗ-522.pdf" in paths
+    assert "Приложение №2 Проект договора.docx" not in paths
+
+
+def test_ranked_file_paths_sorts_by_priority() -> None:
+    selection = {
+        "files": [
+            {"path": "b.pdf", "priority": 2},
+            {"path": "a.pdf", "priority": 1},
+        ]
+    }
+    assert ranked_file_paths(selection) == ["a.pdf", "b.pdf"]
+
+
+def test_extraction_is_sufficient_with_product_and_spec() -> None:
+    items = [
+        ExtractedRequirement(
+            text="МИР С-05",
+            quote="МИР",
+            file="a.pdf",
+            location="док",
+            kind="product",
+            confidence=0.8,
+        ),
+        ExtractedRequirement(
+            text="230 В",
+            quote="230",
+            file="a.pdf",
+            location="док",
+            kind="specs",
+            confidence=0.7,
+        ),
+    ]
+    assert extraction_is_sufficient(items, min_specs=2)
+
+
+def test_extraction_is_sufficient_needs_enough_specs_without_product() -> None:
+    items = [
+        ExtractedRequirement(
+            text="230 В",
+            quote="230",
+            file="a.pdf",
+            location="док",
+            kind="specs",
+            confidence=0.7,
+        ),
+    ]
+    assert not extraction_is_sufficient(items, min_specs=2)
+    items.append(
+        ExtractedRequirement(
+            text="класс 1.0",
+            quote="1.0",
+            file="a.pdf",
+            location="док",
+            kind="specs",
+            confidence=0.6,
+        )
+    )
+    assert extraction_is_sufficient(items, min_specs=2)
+
+
+def test_select_by_llm_parses_response() -> None:
+    entries = [
+        _entry("ТЗ/основное.pdf"),
+        _entry("договор.docx", ".docx"),
+    ]
+    llm = MagicMock()
+    llm.complete.return_value = MagicMock(
+        text=(
+            '{"files": [{"path": "ТЗ/основное.pdf", "priority": 1, "role": "tz", '
+            '"reason": "главное ТЗ"}], "skip": [{"path": "договор.docx", "reason": "шаблон"}]}'
+        )
+    )
+    result = select_tender_files_by_llm(entries, "tree", llm, max_files=3)
+    assert result["files"][0]["path"] == "ТЗ/основное.pdf"
+    assert result["mode"] == "llm"
+
+
+def test_build_catalog_from_inventory(tmp_path: Path) -> None:
+    tz_dir = tmp_path / "Приложение №1 Техническое задание"
+    tz_dir.mkdir()
+    (tz_dir / "ТЗ.pdf").write_bytes(b"x" * 50)
+    (tmp_path / "договор.docx").write_bytes(b"x" * 10)
+
+    inventory = inventory_tender_folder(tmp_path)
+    try:
+        entries = build_catalog_from_inventory(inventory)
+        paths = {entry.path for entry in entries}
+        assert "Приложение №1 Техническое задание/ТЗ.pdf" in paths
+        tree = format_catalog_tree(entries)
+        assert "ТЗ.pdf" in tree
+    finally:
+        inventory.cleanup()
+
+
+def test_select_by_llm_rejects_unknown_paths() -> None:
+    entries = [_entry("real.pdf")]
+    llm = MagicMock()
+    llm.complete.return_value = MagicMock(
+        text='{"files": [{"path": "missing.pdf", "priority": 1}], "skip": []}'
+    )
+    result = select_tender_files_by_llm(entries, "tree", llm, max_files=3)
+    assert result["files"] == []

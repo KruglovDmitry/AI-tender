@@ -349,11 +349,25 @@ def extract_tender_requirements_from_documents(
     *,
     use_llm: bool = True,
     max_chars_per_doc: int = 120_000,
+    file_order: list[str] | None = None,
+    early_stop: bool = False,
+    early_stop_min_specs: int = 2,
+    early_stop_min_confidence: float = 0.55,
+    early_stop_min_files: int = 2,
+    max_files_to_process: int | None = None,
 ) -> tuple[list[ExtractedRequirement], dict[str, Any]]:
     """
     Основной режим: каждый файл тендера целиком → LLM extract → дедуп → top-N.
+    При file_order — обработка в заданном порядке; early_stop — остановка при достаточном наборе.
     """
     files = merge_documents_by_file(documents)
+    if file_order:
+        order_index = {label: index for index, label in enumerate(file_order)}
+        files = sorted(
+            files,
+            key=lambda item: (order_index.get(item[0], len(order_index)), item[0].lower()),
+        )
+
     stats: dict[str, Any] = {
         "mode": "uniform_fallback",
         "input_documents": len(documents),
@@ -363,9 +377,14 @@ def extract_tender_requirements_from_documents(
         "selected": 0,
         "anchored": 0,
         "truncated_files": [],
+        "files_processed": [],
+        "early_stopped": False,
     }
     if not files:
         return [], stats
+
+    if max_files_to_process is not None:
+        files = files[: max(0, max_files_to_process)]
 
     if not use_llm or llm is None:
         # Без LLM: берём равномерные куски склеенных файлов как псевдо-требования.
@@ -393,6 +412,8 @@ def extract_tender_requirements_from_documents(
 
     raw_all: list[ExtractedRequirement] = []
     try:
+        from .doc_select import extraction_is_sufficient
+
         for label, text, page in files:
             items, truncated = extract_requirements_from_document(
                 llm,
@@ -402,8 +423,16 @@ def extract_tender_requirements_from_documents(
                 max_chars=max_chars_per_doc,
             )
             raw_all.extend(items)
+            stats["files_processed"].append(label)
             if truncated:
                 stats["truncated_files"].append(label)
+            if early_stop and extraction_is_sufficient(
+                raw_all,
+                min_specs=early_stop_min_specs,
+                min_confidence=early_stop_min_confidence,
+            ) and len(stats["files_processed"]) >= max(1, early_stop_min_files):
+                stats["early_stopped"] = True
+                break
     except Exception as exc:
         nodes = [_source_node_from_file(label, text, page=page) for label, text, page in files]
         reqs = fallback_requirements_from_nodes(nodes, limit)
@@ -426,6 +455,8 @@ def extract_tender_requirements_from_documents(
 
     reqs = dedupe_requirements(raw_all, limit)
     stats["mode"] = "llm_extract_whole_doc"
+    if early_stop:
+        stats["mode"] = "llm_extract_sequential"
     stats["requirements"] = len(raw_all)
     stats["selected"] = len(reqs)
     stats["anchored"] = sum(1 for item in reqs if item.line_start is not None)
