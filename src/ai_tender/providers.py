@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from typing import Any
 
@@ -12,14 +13,17 @@ from llama_index.core.llms import LLM
 from .models import (
     DEFAULT_USER_INSTRUCTION,
     STATUS_PRIORITY,
+    Evidence,
+    ExtractedRequirement,
     Finding,
+    PositionMatchStatus,
+    ScopePositionMatch,
     Settings,
     Status,
 )
 
 
-def parse_llm_json(content: str) -> dict[str, Any]:
-    """Разбор JSON-ответа LLM (часто с markdown fence)."""
+def _strip_llm_json_fence(content: str) -> str:
     text = content.strip()
     if text.startswith("```"):
         text = (
@@ -32,10 +36,48 @@ def parse_llm_json(content: str) -> dict[str, Any]:
     end = text.rfind("}")
     if start >= 0 and end > start:
         text = text[start : end + 1]
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError("Ответ LLM должен быть JSON-объектом")
-    return data
+    return text
+
+
+def _repair_json_text(text: str) -> str:
+    """Типичные починки ответов LLM: запятые, кавычки, управляющие символы."""
+    repaired = (
+        text.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+    )
+    # Управляющие символы внутри строк ломают json.loads.
+    repaired = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", repaired)
+    # Висячие запятые перед } или ]
+    repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+    return repaired
+
+
+def parse_llm_json(content: str) -> dict[str, Any]:
+    """Разбор JSON-ответа LLM (fence, хвостовые запятые, битые control chars)."""
+    text = _strip_llm_json_fence(content)
+    candidates = [text, _repair_json_text(text)]
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if not isinstance(data, dict):
+            raise ValueError("Ответ LLM должен быть JSON-объектом")
+        return data
+    assert last_error is not None
+    raise last_error
+
+
+def try_parse_llm_json(content: str) -> dict[str, Any] | None:
+    """Как parse_llm_json, но без исключения при ошибке."""
+    try:
+        return parse_llm_json(content)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
 
 
 ASSESS_SCHEMA_HINT = """
@@ -67,6 +109,41 @@ status (для требования тендера):
 """.strip()
 
 
+POSITION_MATCH_SCHEMA_HINT = """
+Верни ТОЛЬКО JSON-объект:
+{
+  "matched": true|false,
+  "status": "matched|partial|none",
+  "product_name": "модель/серия/обозначение из цитат эталона или пустая строка",
+  "explanation": "1-2 предложения: почему подходит или почему нет",
+  "confidence": 0.0..1.0
+}
+
+Правила:
+- Опирайся ТОЛЬКО на position, requirements и asset_hits.
+- product_name указывай ТОЛЬКО если он явно есть в цитатах эталона.
+- matched=true только если есть конкретный подходящий вариант.
+- status=partial — вариант близок, но покрытие требований неполное.
+- status=none и matched=false — подходящего варианта нет.
+""".strip()
+
+
+VERDICT_SCHEMA_HINT = """
+Верни ТОЛЬКО JSON-объект:
+{
+  "suitable": true|false|null,
+  "label": "подходит|с оговорками|не подходит",
+  "verdict": "2-4 предложения итогового вывода по тендеру"
+}
+
+Правила:
+- suitable=true если закрыта большая часть позиций (matched/partial).
+- suitable=false если подходящих вариантов мало или нет.
+- suitable=null только если данных совсем недостаточно.
+- Пиши кратко, по делу, на русском.
+""".strip()
+
+
 def build_llm(settings: Settings) -> LLM:
     provider = settings.llm_provider.lower().strip()
     if provider == "openai":
@@ -95,6 +172,147 @@ def build_llm(settings: Settings) -> LLM:
         is_chat_model=True,
         is_function_calling_model=False,
         temperature=0,
+    )
+
+
+def match_scope_position(
+    llm: LLM,
+    *,
+    scope_item: dict[str, Any],
+    requirements: list[ExtractedRequirement],
+    asset_hits: list[Evidence],
+    user_instruction: str | None = None,
+) -> ScopePositionMatch:
+    """Подбор варианта из эталона для одной позиции перечня."""
+    scope_name = str(scope_item.get("name") or "").strip()
+    qty = scope_item.get("qty")
+    unit = str(scope_item.get("unit") or "").strip()
+    base = ScopePositionMatch(
+        scope_name=scope_name,
+        qty=qty if isinstance(qty, (int, float)) or qty is None else None,
+        unit=unit,
+        requirements=list(requirements),
+        asset_hits=list(asset_hits),
+    )
+    if not asset_hits:
+        base.status = PositionMatchStatus.none
+        base.explanation = "Подходящего варианта в эталоне нет (нет релевантных фрагментов)."
+        return base
+
+    instruction = (user_instruction or DEFAULT_USER_INSTRUCTION).strip()
+    payload = {
+        "position": {
+            "name": scope_name,
+            "qty": qty,
+            "unit": unit,
+        },
+        "requirements": [
+            {
+                "text": req.text,
+                "quote": req.quote,
+                "kind": req.kind,
+                "priority": req.priority,
+            }
+            for req in requirements
+        ],
+        "asset_hits": [hit.model_dump() for hit in asset_hits],
+    }
+    prompt = (
+        "Ты аналитик закупок. Подбери конкретный вариант продукции из цитат эталона "
+        "для позиции перечня с учётом её требований.\n"
+        f"ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:\n{instruction}\n\n"
+        f"{POSITION_MATCH_SCHEMA_HINT}\n\n"
+        f"ДАННЫЕ:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    response = llm.complete(prompt)
+    data = parse_llm_json(str(response))
+
+    status_raw = str(data.get("status") or "").strip().lower()
+    matched = bool(data.get("matched", False))
+    try:
+        status = PositionMatchStatus(status_raw)
+    except ValueError:
+        status = PositionMatchStatus.matched if matched else PositionMatchStatus.none
+    if not matched and status == PositionMatchStatus.matched:
+        status = PositionMatchStatus.none
+
+    product_name = str(data.get("product_name") or "").strip()
+    if status == PositionMatchStatus.none:
+        product_name = ""
+
+    try:
+        confidence = float(data.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    base.status = status
+    base.product_name = product_name
+    base.explanation = str(data.get("explanation") or "").strip()
+    if not base.explanation and status == PositionMatchStatus.none:
+        base.explanation = "Подходящего варианта в эталоне нет."
+    base.confidence = min(max(confidence, 0.0), 1.0)
+    return base
+
+
+def build_tender_verdict(
+    llm: LLM,
+    matches: list[ScopePositionMatch],
+    *,
+    scope_summary: str = "",
+) -> str:
+    """Итоговый вывод по тендеру отдельным запросом к LLM."""
+    if not matches:
+        return "Перечень позиций пуст — вывод о пригодности тендера сформировать нельзя."
+
+    covered = sum(
+        1
+        for item in matches
+        if item.status in (PositionMatchStatus.matched, PositionMatchStatus.partial)
+    )
+    payload = {
+        "scope_summary": scope_summary,
+        "total_positions": len(matches),
+        "covered_positions": covered,
+        "positions": [
+            {
+                "name": item.scope_name,
+                "qty": item.qty,
+                "unit": item.unit,
+                "status": item.status.value,
+                "product_name": item.product_name,
+                "requirements_count": len(item.requirements),
+                "explanation": item.explanation,
+            }
+            for item in matches
+        ],
+    }
+    prompt = (
+        "Ты аналитик закупок. По результатам подбора эталонных вариантов к позициям "
+        "перечня сделай итоговый вывод: подходит ли тендер (можно ли закрыть "
+        "большую часть позиций нашей продукцией).\n\n"
+        f"{VERDICT_SCHEMA_HINT}\n\n"
+        f"ДАННЫЕ:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    response = llm.complete(prompt)
+    data = parse_llm_json(str(response))
+    verdict = str(data.get("verdict") or "").strip()
+    label = str(data.get("label") or "").strip()
+    if label and verdict:
+        return f"{label.capitalize()}. {verdict}"
+    if verdict:
+        return verdict
+    # Fallback без LLM-текста
+    ratio = covered / max(len(matches), 1)
+    if ratio >= 0.7:
+        return (
+            f"Тендер в целом подходит: закрыто {covered} из {len(matches)} позиций."
+        )
+    if ratio >= 0.4:
+        return (
+            f"Тендер подходит с оговорками: закрыто {covered} из {len(matches)} позиций."
+        )
+    return (
+        f"Тендер скорее не подходит: закрыто лишь {covered} из {len(matches)} позиций."
     )
 
 

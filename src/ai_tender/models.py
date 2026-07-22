@@ -24,7 +24,6 @@ class ExtractedRequirement(BaseModel):
     text: str
     quote: str
     # К какому пункту "предмета закупки" относится требование.
-    # Используется для уточнения retrieval и подсказки LLM при оценке.
     scope_item: str | None = None
     file: str
     location: str
@@ -43,11 +42,23 @@ class Status(StrEnum):
     uncertain = "uncertain"
 
 
+class PositionMatchStatus(StrEnum):
+    matched = "matched"
+    partial = "partial"
+    none = "none"
+
+
 STATUS_LABELS = {
     Status.found.value: "Применимо",
     Status.partial.value: "Частично применимо",
     Status.not_found.value: "Не применимо",
     Status.uncertain.value: "Недостаточно данных",
+}
+
+POSITION_STATUS_LABELS = {
+    PositionMatchStatus.matched.value: "Есть вариант",
+    PositionMatchStatus.partial.value: "Частично",
+    PositionMatchStatus.none.value: "Нет варианта",
 }
 
 STATUS_PRIORITY = {
@@ -60,9 +71,9 @@ STATUS_PRIORITY = {
 DEFAULT_USER_INSTRUCTION = (
     "Эталон — подробное техническое описание изготавливаемой продукции. "
     "Тендер задаёт обобщённые требования к закупке (без привязки к поставщику). "
-    "Для каждого требования из тендера оцени, подтверждают ли цитаты эталона "
-    "применимость продукции к этому требованию по смыслу, а не только дословно. "
-    "Указывай конкретные ТС/модели из эталона, если они явно названы в цитатах."
+    "Для каждой позиции перечня оцени, есть ли в цитатах эталона подходящий "
+    "конкретный вариант (модель/серия/обозначение), и подтверждают ли цитаты "
+    "применимость к требованиям позиции по смыслу."
 )
 
 
@@ -76,6 +87,20 @@ class Finding(BaseModel):
     kind: str = "other"  # product | specs | other
 
 
+class ScopePositionMatch(BaseModel):
+    """Позиция перечня: требования тендера + подобранный вариант из эталона."""
+
+    scope_name: str
+    qty: float | int | None = None
+    unit: str = ""
+    requirements: list[ExtractedRequirement] = Field(default_factory=list)
+    status: PositionMatchStatus = PositionMatchStatus.none
+    product_name: str = ""
+    explanation: str = ""
+    asset_hits: list[Evidence] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+
+
 class AnalysisReport(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -84,7 +109,9 @@ class AnalysisReport(BaseModel):
     embedding_model: str
     llm_model: str
     summary: str = ""
+    verdict: str = ""
     findings: list[Finding] = Field(default_factory=list)
+    position_matches: list[ScopePositionMatch] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     indexed_files: list[str] = Field(default_factory=list)
     index_reused: bool = False
@@ -113,6 +140,7 @@ class Settings(BaseSettings):
     chunk_overlap: int = 128
     max_tender_queries: int = 15
     max_findings: int = 12
+    max_reqs_per_scope_item: int = 10
 
     # LangGraph: выбор файлов и extract
     max_extract_chars_per_doc: int = 120_000

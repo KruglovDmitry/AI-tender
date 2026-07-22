@@ -6,7 +6,9 @@ from pathlib import Path
 import streamlit as st
 
 from ai_tender.models import (
+    POSITION_STATUS_LABELS,
     AnalysisReport,
+    PositionMatchStatus,
     get_settings,
 )
 from ai_tender.ocr import ocr_status
@@ -14,7 +16,7 @@ from ai_tender.graph import analyze
 
 st.set_page_config(page_title="AI Tender", page_icon="📋", layout="wide")
 st.title("AI Tender")
-st.caption("Предмет закупки (перечень позиций)")
+st.caption("Предмет закупки → требования → эталон")
 
 st.markdown(
     """
@@ -245,11 +247,19 @@ def format_elapsed(seconds: float | None) -> str:
 
 
 def render_report(report: AnalysisReport, tender_root: str, assets_root: str) -> None:
-    del tender_root, assets_root  # этап сверки с эталоном пока отключён
+    del tender_root, assets_root
     elapsed = format_elapsed(report.elapsed_seconds)
-    st.success(f"Готово за {elapsed}.")
+    cache_note = (
+        "индекс эталонов из кэша"
+        if report.index_reused
+        else "индекс эталонов построен заново"
+    )
+    st.success(f"Готово за {elapsed}. {cache_note.capitalize()}.")
 
-    if report.summary:
+    if report.verdict:
+        st.subheader("Итоговый вывод")
+        st.info(report.verdict.replace("\n", "  \n"))
+    elif report.summary:
         st.info(report.summary.replace("\n", "  \n"))
 
     qs = report.query_selection or {}
@@ -281,7 +291,7 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
                 st.warning(f"Выбор файлов: fallback — {doc_sel['error']}")
 
     scope = qs.get("scope") or {}
-    items = scope.get("items") or []
+    matches = list(getattr(report, "position_matches", None) or [])
     with st.expander("Предмет закупки", expanded=True):
         st.caption(
             f"confidence={scope.get('overall_confidence', '—')} · "
@@ -290,26 +300,74 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
         summary = (scope.get("summary") or "").strip()
         if summary:
             st.markdown(f"**Титул:** {summary}")
-        if items:
-            st.markdown("**Перечень позиций:**")
-            for index, item in enumerate(items, start=1):
-                if isinstance(item, dict):
-                    name = str(item.get("name") or "").strip() or "—"
-                    qty = item.get("qty")
-                    unit = str(item.get("unit") or "").strip()
-                    qty_part = f" — {qty} {unit}".rstrip() if qty is not None else ""
-                    st.markdown(f"{index}. {name}{qty_part}")
-                else:
-                    st.markdown(f"{index}. {item}")
-        elif scope.get("missing_signals"):
-            st.warning(scope.get("missing_signals"))
+
+        if matches:
+            for index, match in enumerate(matches, start=1):
+                qty_part = (
+                    f" — {match.qty} {match.unit}".rstrip()
+                    if match.qty is not None
+                    else ""
+                )
+                status_label = POSITION_STATUS_LABELS.get(
+                    match.status.value, match.status.value
+                )
+                title = f"{index}. {match.scope_name}{qty_part}"
+                if len(title) > 110:
+                    title = title[:107] + "…"
+                header = f"{title} · {status_label}"
+                with st.expander(header, expanded=(index == 1)):
+                    st.caption(f"Статус: {status_label} · conf={match.confidence:.2f}")
+
+                    if match.requirements:
+                        st.markdown("**Требования:**")
+                        for req in match.requirements:
+                            st.markdown(f"- {req.text}")
+                    else:
+                        st.caption("Требования не найдены.")
+
+                    if match.status == PositionMatchStatus.none or not match.product_name:
+                        st.markdown("**Эталон:** нет подходящего варианта")
+                    else:
+                        st.markdown(f"**Эталон:** {match.product_name}")
+                    if match.explanation:
+                        st.write(match.explanation)
+                    if match.asset_hits:
+                        with st.expander(f"Фрагменты эталона ({len(match.asset_hits)})"):
+                            for hit in match.asset_hits[:5]:
+                                score = (
+                                    f" · score={hit.score:.3f}"
+                                    if hit.score is not None
+                                    else ""
+                                )
+                                st.caption(f"{Path(hit.file).name} · {hit.location}{score}")
+                                st.write(hit.quote[:400])
         else:
-            st.warning("Перечень позиций не извлечён.")
+            items = scope.get("items") or []
+            if items:
+                st.markdown("**Перечень позиций:**")
+                for index, item in enumerate(items, start=1):
+                    if isinstance(item, dict):
+                        name = str(item.get("name") or "").strip() or "—"
+                        qty = item.get("qty")
+                        unit = str(item.get("unit") or "").strip()
+                        qty_part = f" — {qty} {unit}".rstrip() if qty is not None else ""
+                        st.markdown(f"{index}. {name}{qty_part}")
+                    else:
+                        st.markdown(f"{index}. {item}")
+            elif scope.get("missing_signals"):
+                st.warning(scope.get("missing_signals"))
+            else:
+                st.warning("Перечень позиций не извлечён.")
+
         files_used = scope.get("files_used") or []
         if files_used:
             st.caption(
-                "Файлы: " + ", ".join(Path(path).name for path in files_used)
+                "Файлы scope: " + ", ".join(Path(path).name for path in files_used)
             )
+
+    if report.indexed_files:
+        with st.expander(f"Эталоны в индексе ({len(report.indexed_files)} файлов)"):
+            st.write("\n".join(f"- {Path(path).name}" for path in report.indexed_files))
 
     if report.warnings:
         with st.expander(f"Предупреждения ({len(report.warnings)})"):
@@ -345,6 +403,14 @@ with st.sidebar:
     ocr_ok, ocr_hint = ocr_status()
     if ocr_enabled and not ocr_ok:
         st.warning(ocr_hint)
+
+    max_reqs_per_scope_item = st.slider(
+        "Макс. требований на позицию",
+        min_value=1,
+        max_value=20,
+        value=min(max(settings.max_reqs_per_scope_item, 1), 20),
+        help="Верхний лимит извлечённых требований на каждую позицию перечня. Минимум не ограничен.",
+    )
 
 default_tender = default_tender_path()
 default_assets = default_assets_path()
@@ -396,6 +462,7 @@ if st.button("Начать сравнение", type="primary", width="stretch")
                 "llm_provider": llm_provider,
                 "llm_model": llm_model,
                 "ocr_enabled": ocr_enabled,
+                "max_reqs_per_scope_item": max_reqs_per_scope_item,
             }
         )
 

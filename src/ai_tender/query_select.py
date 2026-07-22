@@ -91,6 +91,36 @@ def attach_anchor(
     )
 
 
+def position_to_query_text(
+    scope_name: str,
+    requirements: list[ExtractedRequirement],
+    *,
+    max_reqs: int = 8,
+) -> str:
+    """Текстовый запрос в индекс эталонов по позиции + её требованиям."""
+    lines = [f"Позиция закупки: {scope_name.strip()}"]
+    for req in requirements[:max_reqs]:
+        lines.append(f"- {req.text.strip()}")
+        if req.quote and req.quote.strip() and req.quote.strip() != req.text.strip():
+            lines.append(f"  цитата: {req.quote.strip()[:240]}")
+    return "\n".join(lines).strip()
+
+
+def retrieve_hits_for_position(
+    scope_name: str,
+    requirements: list[ExtractedRequirement],
+    assets_index,
+    top_k: int,
+) -> list:
+    from .index import retrieve_for_queries
+
+    query = position_to_query_text(scope_name, requirements)
+    if not query:
+        return []
+    hit_lists = retrieve_for_queries(assets_index, [query], top_k=top_k)
+    return list(hit_lists[0]) if hit_lists else []
+
+
 def requirement_to_evidence(req: ExtractedRequirement) -> Evidence:
     return Evidence(
         file=req.file,
