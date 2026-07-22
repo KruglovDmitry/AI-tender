@@ -1,15 +1,12 @@
-from pathlib import Path
-
 from llama_index.core import Document
 from llama_index.core.schema import TextNode
 
-from ai_tender.anchors import locate_quote, refine_requirement_anchors
+from ai_tender.anchors import locate_quote
 from ai_tender.models import ExtractedRequirement
-from ai_tender.query_select import (
+from ai_tender.req_text import (
     attach_anchor,
     dedupe_requirements,
     merge_documents_by_file,
-    requirement_to_evidence,
 )
 
 
@@ -46,23 +43,7 @@ def test_attach_anchor_remembers_lines() -> None:
         confidence=0.9,
     )
     assert req.line_start == 2
-    evidence = requirement_to_evidence(req)
-    assert evidence.line_start == 2
-
-
-def test_refine_anchors_against_full_file(tmp_path: Path) -> None:
-    path = tmp_path / "tz.txt"
-    path.write_text("a\nb\nТребование: ток 5 (80) А\nc\n", encoding="utf-8")
-    req = ExtractedRequirement(
-        text="ток 5 (80) А",
-        quote="ток 5 (80) А",
-        file="tz.txt",
-        location="фрагмент",
-        line_start=1,
-        line_end=1,
-    )
-    refined = refine_requirement_anchors([req], tmp_path)
-    assert refined[0].line_start == 3
+    assert req.quote == "Номинальное напряжение 230 В"
 
 
 def test_dedupe_requirements() -> None:
@@ -99,8 +80,8 @@ def test_dedupe_keeps_products_first() -> None:
             confidence=0.9,
         ),
         ExtractedRequirement(
-            text="МИР С-05.10-230-5(80)",
-            quote="МИР С-05",
+            text="Изделие серии X-05",
+            quote="серия X-05",
             file="a.docx",
             location="док",
             kind="product",

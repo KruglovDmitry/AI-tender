@@ -2,8 +2,7 @@ from pathlib import Path
 
 from docx import Document
 
-from ai_tender.index import cache_key, folder_fingerprint, select_query_nodes
-from llama_index.core.schema import TextNode
+from ai_tender.index import cache_key, folder_fingerprint
 
 
 def _write_docx(path: Path, text: str) -> None:
@@ -26,9 +25,3 @@ def test_cache_key_includes_chunk_settings(tmp_path: Path) -> None:
     key_a = cache_key(tmp_path, "BAAI/bge-m3", 1024, 128)
     key_b = cache_key(tmp_path, "BAAI/bge-m3", 512, 128)
     assert key_a != key_b
-
-
-def test_select_query_nodes_limits() -> None:
-    nodes = [TextNode(text=f"chunk with enough words for filter {index} " * 8) for index in range(100)]
-    selected = select_query_nodes(nodes, limit=10)
-    assert len(selected) == 10

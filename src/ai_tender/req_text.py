@@ -1,14 +1,13 @@
-"""Хелперы для требований: якоря, дедуп, product/specs split, retrieval."""
+"""Общие хелперы текста документов и требований (scope + requirements)."""
 
 from __future__ import annotations
 
 from collections import defaultdict
-
 from llama_index.core import Document
 from llama_index.core.schema import BaseNode, TextNode
 
 from .anchors import format_location, locate_quote
-from .models import Evidence, ExtractedRequirement
+from .models import ExtractedRequirement
 
 
 def node_raw_text(node: BaseNode) -> str:
@@ -89,76 +88,6 @@ def attach_anchor(
         priority=priority,
         confidence=confidence,
     )
-
-
-def position_to_query_text(
-    scope_name: str,
-    requirements: list[ExtractedRequirement],
-    *,
-    max_reqs: int = 8,
-) -> str:
-    """Текстовый запрос в индекс эталонов по позиции + её требованиям."""
-    lines = [f"Позиция закупки: {scope_name.strip()}"]
-    for req in requirements[:max_reqs]:
-        lines.append(f"- {req.text.strip()}")
-        if req.quote and req.quote.strip() and req.quote.strip() != req.text.strip():
-            lines.append(f"  цитата: {req.quote.strip()[:240]}")
-    return "\n".join(lines).strip()
-
-
-def retrieve_hits_for_position(
-    scope_name: str,
-    requirements: list[ExtractedRequirement],
-    assets_index,
-    top_k: int,
-) -> list:
-    from .index import retrieve_for_queries
-
-    query = position_to_query_text(scope_name, requirements)
-    if not query:
-        return []
-    hit_lists = retrieve_for_queries(assets_index, [query], top_k=top_k)
-    return list(hit_lists[0]) if hit_lists else []
-
-
-def requirement_to_evidence(req: ExtractedRequirement) -> Evidence:
-    return Evidence(
-        file=req.file,
-        location=req.location,
-        quote=req.quote or req.text,
-        page=req.page,
-        line_start=req.line_start,
-        line_end=req.line_end,
-    )
-
-
-def requirement_to_query_text(req: ExtractedRequirement) -> str:
-    body = (
-        f"Предмет закупки: {req.scope_item.strip()}\n\n{req.text}"
-        if req.scope_item
-        else req.text
-    )
-    if req.quote:
-        body = f"{body}\n{req.quote}".strip()
-    return body.strip()
-
-
-def retrieve_requirement_candidates(
-    requirements: list[ExtractedRequirement],
-    assets_index,
-    top_k: int,
-) -> list[tuple[ExtractedRequirement, list]]:
-    from .index import retrieve_for_queries
-
-    if not requirements:
-        return []
-    queries = [requirement_to_query_text(item) for item in requirements]
-    hit_lists = retrieve_for_queries(assets_index, queries, top_k=top_k)
-    return [
-        (req, hits)
-        for req, hits in zip(requirements, hit_lists, strict=True)
-        if hits
-    ]
 
 
 def _normalize_key(text: str) -> str:

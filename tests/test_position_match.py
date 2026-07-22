@@ -1,109 +1,77 @@
 from unittest.mock import MagicMock
 
-from llama_index.core.schema import TextNode
-
-from ai_tender.extract import parse_requirements_per_scope_payload, scope_has_detailed_list
-from ai_tender.models import Evidence, PositionMatchStatus
-from ai_tender.providers import build_tender_verdict, match_scope_position
-from ai_tender.query_select import position_to_query_text
+from ai_tender.nodes.scope import scope_has_detailed_list
+from ai_tender.models import Evidence, ExtractedRequirement, PositionMatchStatus, ScopePositionMatch
+from ai_tender.nodes.match import (
+    dedupe_evidence_by_file,
+    match_scope_position,
+    position_to_query_text,
+)
+from ai_tender.nodes.verdict import build_tender_verdict
 
 
 def test_scope_has_detailed_list() -> None:
     assert not scope_has_detailed_list([])
     assert not scope_has_detailed_list([{"name": "титул", "qty": None}])
-    assert scope_has_detailed_list([{"name": "ПКУ", "qty": 24}])
+    assert scope_has_detailed_list([{"name": "позиция А", "qty": 24}])
     assert scope_has_detailed_list([{"name": "a"}, {"name": "b"}])
 
 
-def test_parse_requirements_per_scope_payload() -> None:
-    scope_items = [
-        {"name": "замена ПКУ 6-10 кВ", "qty": 24, "unit": "шт."},
-        {"name": "монтаж ПКУ", "qty": 174, "unit": "шт."},
+def test_dedupe_evidence_by_file() -> None:
+    hits = [
+        Evidence(file="a.pdf", location="1", quote="x", score=0.1),
+        Evidence(file="a.pdf", location="2", quote="y", score=0.9),
+        Evidence(file="b.pdf", location="1", quote="z", score=0.5),
     ]
-    source = TextNode(
-        text="Класс точности 0.5S\nНоминальное напряжение 6-10 кВ",
-        metadata={"file_path": "tz.docx", "location": "документ"},
-    )
-    data = {
-        "items": [
-            {
-                "scope_index": 0,
-                "requirements": [
-                    {
-                        "text": "Класс точности 0.5S",
-                        "quote": "Класс точности 0.5S",
-                        "kind": "specs",
-                        "priority": 3,
-                        "confidence": 0.9,
-                    },
-                    {
-                        "text": "Напряжение 6-10 кВ",
-                        "quote": "Номинальное напряжение 6-10 кВ",
-                        "kind": "specs",
-                        "priority": 2,
-                        "confidence": 0.8,
-                    },
-                ],
-            },
-            {"scope_index": 1, "requirements": []},
-        ]
-    }
-    buckets = parse_requirements_per_scope_payload(
-        data,
-        scope_items=scope_items,
-        source_node=source,
-        max_per_item=10,
-    )
-    assert len(buckets) == 2
-    assert len(buckets[0]) == 2
-    assert buckets[0][0].scope_item == "замена ПКУ 6-10 кВ"
-    assert buckets[1] == []
-
-
-def test_parse_requirements_respects_max_per_item() -> None:
-    scope_items = [{"name": "ПКУ"}]
-    source = TextNode(text="a\nb\nc", metadata={"file_path": "a.docx"})
-    data = {
-        "items": [
-            {
-                "scope_index": 0,
-                "requirements": [
-                    {"text": f"req {i}", "quote": f"req {i}", "kind": "specs", "priority": 2}
-                    for i in range(5)
-                ],
-            }
-        ]
-    }
-    buckets = parse_requirements_per_scope_payload(
-        data,
-        scope_items=scope_items,
-        source_node=source,
-        max_per_item=2,
-    )
-    assert len(buckets[0]) == 2
+    out = dedupe_evidence_by_file(hits)
+    assert len(out) == 2
+    assert out[0].quote == "y"
+    assert out[0].score == 0.9
 
 
 def test_position_to_query_text() -> None:
-    from ai_tender.models import ExtractedRequirement
-
     reqs = [
         ExtractedRequirement(
             text="Класс точности 0.5S",
             quote="Класс точности 0.5S",
             file="tz.docx",
             location="док",
+            kind="specs",
         )
     ]
-    text = position_to_query_text("замена ПКУ 6-10 кВ", reqs)
-    assert "замена ПКУ 6-10 кВ" in text
+    text = position_to_query_text("позиция перечня", reqs)
+    assert "позиция перечня" in text
     assert "Класс точности 0.5S" in text
+
+
+def test_position_to_query_prefers_product_first() -> None:
+    reqs = [
+        ExtractedRequirement(
+            text="Ток 5 А",
+            quote="ток",
+            file="tz.docx",
+            location="док",
+            kind="specs",
+            priority=3,
+        ),
+        ExtractedRequirement(
+            text="Изделие серии X",
+            quote="серия X",
+            file="tz.docx",
+            location="док",
+            kind="product",
+            priority=2,
+        ),
+    ]
+    text = position_to_query_text("позиция", reqs)
+    assert text.index("Изделие серии X") < text.index("Ток 5 А")
 
 
 def test_match_scope_position_no_hits() -> None:
     llm = MagicMock()
     match = match_scope_position(
         llm,
-        scope_item={"name": "ПКУ", "qty": 24, "unit": "шт."},
+        scope_item={"name": "позиция", "qty": 24, "unit": "шт."},
         requirements=[],
         asset_hits=[],
     )
@@ -115,33 +83,53 @@ def test_match_scope_position_no_hits() -> None:
 def test_match_scope_position_parses_llm() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": true, "status": "matched", "product_name": "ПКУ-10", '
+        '{"matched": true, "status": "matched", "product_name": "Модель-10", '
         '"explanation": "Модель подходит по напряжению.", "confidence": 0.8}'
     )
-    hit = Evidence(file="asset.pdf", location="стр. 1", quote="ПКУ-10 6-10 кВ")
+    hit = Evidence(file="asset.pdf", location="стр. 1", quote="Модель-10 6-10 кВ")
     match = match_scope_position(
         llm,
-        scope_item={"name": "замена ПКУ 6-10 кВ", "qty": 24, "unit": "шт."},
+        scope_item={"name": "замена оборудования 6-10 кВ", "qty": 24, "unit": "шт."},
         requirements=[],
         asset_hits=[hit],
     )
     assert match.status == PositionMatchStatus.matched
-    assert match.product_name == "ПКУ-10"
+    assert match.product_name == "Модель-10"
     assert "напряжению" in match.explanation
+
+
+def test_match_matched_true_with_none_status_becomes_partial() -> None:
+    llm = MagicMock()
+    llm.complete.return_value = (
+        '{"matched": true, "status": "none", "product_name": "Серия A", '
+        '"explanation": "Основное изделие есть, комплектующие не подтверждены.", '
+        '"confidence": 0.6}'
+    )
+    hits = [
+        Evidence(file="a.pdf", location="1", quote="Серия A", score=0.8),
+        Evidence(file="a.pdf", location="2", quote="повтор", score=0.2),
+    ]
+    match = match_scope_position(
+        llm,
+        scope_item={"name": "комплект оборудования", "qty": 2, "unit": "компл."},
+        requirements=[],
+        asset_hits=hits,
+    )
+    assert match.status == PositionMatchStatus.partial
+    assert match.product_name == "Серия A"
+    assert len(match.asset_hits) == 1
 
 
 def test_build_tender_verdict_fallback_on_empty_text() -> None:
     llm = MagicMock()
     llm.complete.return_value = '{"suitable": true, "label": "подходит", "verdict": ""}'
-    from ai_tender.models import ScopePositionMatch
-
     matches = [
         ScopePositionMatch(
-            scope_name="ПКУ",
+            scope_name="позиция A",
             status=PositionMatchStatus.matched,
-            product_name="ПКУ-10",
+            product_name="Модель-10",
         ),
-        ScopePositionMatch(scope_name="ТТ", status=PositionMatchStatus.none),
+        ScopePositionMatch(scope_name="позиция B", status=PositionMatchStatus.none),
     ]
     text = build_tender_verdict(llm, matches, scope_summary="тест")
     assert "1 из 2" in text or "подходит" in text.lower()

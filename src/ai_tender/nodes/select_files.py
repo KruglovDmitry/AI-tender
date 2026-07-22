@@ -8,8 +8,10 @@ from typing import Any
 
 from llama_index.core.llms import LLM
 
-from .providers import parse_llm_json
-from .loaders import READABLE_SUFFIXES, TenderInventory, inventory_tender_folder
+from ..providers import parse_llm_json
+from ..loaders import READABLE_SUFFIXES, TenderInventory, inventory_tender_folder
+from ..models import Settings
+from ..state import PipelineState
 
 SELECT_SCHEMA_HINT = """
 Верни ТОЛЬКО JSON-объект:
@@ -365,3 +367,57 @@ def ranked_file_paths(selection: dict[str, Any]) -> list[str]:
         ),
     )
     return [str(item["path"]) for item in ranked if item.get("path")]
+
+
+def node_select_files(state: PipelineState) -> dict[str, Any]:
+    """Каталог тендера → LLM/heuristic выбор файлов."""
+    from .common import progress
+
+    settings: Settings = state["settings"]
+    progress(state, "Каталог и выбор файлов тендера", 0.1)
+    inventory, catalog_entries, doc_selection = select_tender_files(
+        Path(state["tender_path"]),
+        state["llm"],
+        use_llm=True,
+        max_files=settings.max_tender_files_total,
+    )
+    box = state.get("cleanup_box")
+    if isinstance(box, dict):
+        box["inventory"] = inventory
+
+    ranked = ranked_file_paths(doc_selection)
+    if not ranked:
+        raise ValueError("Не выбрано ни одного файла тендера для анализа")
+
+    initial_queue = ranked[: max(1, settings.max_tender_files_initial)]
+    progress(
+        state,
+        (
+            f"Выбрано {len(ranked)} из {doc_selection.get('catalog_count', 0)} "
+            f"файлов ({doc_selection.get('mode', 'llm')})"
+        ),
+        0.2,
+    )
+    return {
+        "inventory": inventory,
+        "catalog_entries": catalog_entries,
+        "doc_selection": doc_selection,
+        "ranked_paths": ranked,
+        "scope_queue": initial_queue,
+        "loaded_labels": [],
+        "documents": [],
+        "scope_files_used": [],
+        "scope_items": [],
+        "scope_meta": {},
+        "warnings": list(doc_selection.get("warnings") or []),
+        "requirements_by_item": [],
+        "requirements_stats": {},
+        "requirement_queue": [],
+        "requirement_files_tried": [],
+        "current_requirement_file": "",
+        "position_matches": [],
+        "verdict": "",
+        "query_selection": {},
+        "indexed_files": [],
+        "index_reused": False,
+    }

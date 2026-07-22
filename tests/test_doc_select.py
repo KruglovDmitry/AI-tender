@@ -1,7 +1,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from ai_tender.doc_select import (
+from ai_tender.nodes.select_files import (
+    TenderFileEntry,
     build_catalog_from_inventory,
     format_catalog_tree,
     ranked_file_paths,
@@ -12,8 +13,6 @@ from ai_tender.loaders import inventory_tender_folder
 
 
 def _entry(path: str, suffix: str = ".pdf", size: int = 1024) -> object:
-    from ai_tender.doc_select import TenderFileEntry
-
     parent = Path(path).parent.as_posix()
     if parent == ".":
         parent = ""

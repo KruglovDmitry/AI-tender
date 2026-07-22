@@ -35,25 +35,11 @@ class ExtractedRequirement(BaseModel):
     confidence: float = Field(default=0.7, ge=0, le=1)
 
 
-class Status(StrEnum):
-    found = "found"
-    partial = "partial"
-    not_found = "not_found"
-    uncertain = "uncertain"
-
-
 class PositionMatchStatus(StrEnum):
     matched = "matched"
     partial = "partial"
     none = "none"
 
-
-STATUS_LABELS = {
-    Status.found.value: "Применимо",
-    Status.partial.value: "Частично применимо",
-    Status.not_found.value: "Не применимо",
-    Status.uncertain.value: "Недостаточно данных",
-}
 
 POSITION_STATUS_LABELS = {
     PositionMatchStatus.matched.value: "Есть вариант",
@@ -61,30 +47,14 @@ POSITION_STATUS_LABELS = {
     PositionMatchStatus.none.value: "Нет варианта",
 }
 
-STATUS_PRIORITY = {
-    Status.found: 0,
-    Status.partial: 1,
-    Status.uncertain: 2,
-    Status.not_found: 3,
-}
-
 DEFAULT_USER_INSTRUCTION = (
     "Эталон — подробное техническое описание изготавливаемой продукции. "
     "Тендер задаёт обобщённые требования к закупке (без привязки к поставщику). "
     "Для каждой позиции перечня оцени, есть ли в цитатах эталона подходящий "
-    "конкретный вариант (модель/серия/обозначение), и подтверждают ли цитаты "
-    "применимость к требованиям позиции по смыслу."
+    "конкретный вариант (модель/серия/обозначение) основного изделия. "
+    "Если позиция — комплект, а в эталоне подтверждено только основное изделие "
+    "без части комплектующих — это частичное покрытие, не отказ."
 )
-
-
-class Finding(BaseModel):
-    query_text: str
-    tender: Evidence
-    asset_hits: list[Evidence] = Field(default_factory=list)
-    status: Status = Status.uncertain
-    explanation: str = ""
-    confidence: float = Field(default=0.0, ge=0, le=1)
-    kind: str = "other"  # product | specs | other
 
 
 class ScopePositionMatch(BaseModel):
@@ -110,15 +80,12 @@ class AnalysisReport(BaseModel):
     llm_model: str
     summary: str = ""
     verdict: str = ""
-    findings: list[Finding] = Field(default_factory=list)
     position_matches: list[ScopePositionMatch] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     indexed_files: list[str] = Field(default_factory=list)
     index_reused: bool = False
     elapsed_seconds: float | None = None
     query_selection: dict = Field(default_factory=dict)
-    extracted_requirements: list[ExtractedRequirement] = Field(default_factory=list)
-    report_dir: Path | None = None
 
 
 class Settings(BaseSettings):
@@ -138,14 +105,20 @@ class Settings(BaseSettings):
     top_k: int = 3
     chunk_size: int = 1024
     chunk_overlap: int = 128
-    max_tender_queries: int = 15
-    max_findings: int = 12
     max_reqs_per_scope_item: int = 10
 
     # LangGraph: выбор файлов и extract
     max_extract_chars_per_doc: int = 120_000
     max_tender_files_initial: int = 3
     max_tender_files_total: int = 6
+    # Сколько файлов-кандидатов пробовать на позицию (после дедупа docx/pdf).
+    max_requirement_files: int = 3
+    # Параллельные LLM-запросы требований по позициям внутри одного файла.
+    requirements_parallelism: int = 6
+
+    # Трассировка LLM/retrieval в data/llm_traces/run_*
+    llm_trace_enabled: bool = True
+    llm_trace_dir: Path = Path("data/llm_traces")
 
     user_instruction: str = DEFAULT_USER_INSTRUCTION
 

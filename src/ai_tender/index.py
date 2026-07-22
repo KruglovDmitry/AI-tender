@@ -198,35 +198,6 @@ def build_bm25_retriever(index: VectorStoreIndex, top_k: int) -> BM25Retriever:
         )
 
 
-def hybrid_retrieve(
-    index: VectorStoreIndex,
-    query: str,
-    top_k: int,
-    bm25_retriever: BM25Retriever | None = None,
-) -> list[NodeWithScore]:
-    vector_retriever = index.as_retriever(similarity_top_k=top_k)
-    bm25 = bm25_retriever or build_bm25_retriever(index, top_k)
-    vector_hits = vector_retriever.retrieve(query)
-    bm25_hits = bm25.retrieve(query)
-    return _rrf_fuse([vector_hits, bm25_hits], top_k=top_k)
-
-
-def select_query_nodes(nodes: list[BaseNode], limit: int) -> list[BaseNode]:
-    """Равномерно выбираем чанки как поисковые запросы."""
-    if not nodes:
-        return []
-    substantive = [
-        node
-        for node in nodes
-        if len(" ".join(node.get_content(metadata_mode="none").split())) >= 40
-    ]
-    pool = substantive or list(nodes)
-    if len(pool) <= limit:
-        return list(pool)
-    step = len(pool) / limit
-    return [pool[int(index * step)] for index in range(limit)]
-
-
 def _page_from_metadata(meta: dict) -> int | None:
     raw = meta.get("page_number")
     if raw is None:

@@ -1,6 +1,7 @@
 ﻿import os
 import subprocess
 import sys
+from html import escape
 from pathlib import Path
 
 import streamlit as st
@@ -122,6 +123,26 @@ st.markdown(
         background-color: rgba(250, 250, 250, 0.1) !important;
         border-color: rgba(128, 128, 128, 0.45) !important;
     }
+    .pos-match-row {
+        margin: 0.35rem 0 0.15rem 0;
+    }
+    .pos-match-title {
+        margin: 0;
+        line-height: 1.35;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+    .pos-match-status {
+        margin: 0;
+        text-align: right;
+        white-space: nowrap;
+        font-size: 0.9rem;
+        opacity: 0.92;
+    }
+    .pos-match-status.is-none { color: #ff6b6b; }
+    .pos-match-status.is-partial { color: #ffd166; }
+    .pos-match-status.is-matched { color: #6bcb77; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -258,6 +279,9 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
         else "индекс эталонов построен заново"
     )
     st.success(f"Готово за {elapsed}. {cache_note.capitalize()}.")
+    trace_dir = (report.query_selection or {}).get("llm_trace_dir")
+    if trace_dir:
+        st.caption(f"Логи LLM/retrieval: `{trace_dir}`")
 
     if report.verdict:
         st.subheader("Итоговый вывод")
@@ -314,11 +338,29 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
                 status_label = POSITION_STATUS_LABELS.get(
                     match.status.value, match.status.value
                 )
-                title = f"{index}. {match.scope_name}{qty_part}"
-                if len(title) > 110:
-                    title = title[:107] + "…"
-                header = f"{title} · {status_label}"
-                with st.expander(header, expanded=(index == 1)):
+                status_class = {
+                    PositionMatchStatus.matched.value: "is-matched",
+                    PositionMatchStatus.partial.value: "is-partial",
+                    PositionMatchStatus.none.value: "is-none",
+                }.get(match.status.value, "")
+
+                st.markdown('<div class="pos-match-row"></div>', unsafe_allow_html=True)
+                col_title, col_status = st.columns([5, 1], gap="small")
+                with col_title:
+                    st.markdown(
+                        f'<p class="pos-match-title"><strong>{index}. '
+                        f"{escape(str(match.scope_name))}</strong>"
+                        f"{escape(qty_part)}</p>",
+                        unsafe_allow_html=True,
+                    )
+                with col_status:
+                    st.markdown(
+                        f'<p class="pos-match-status {status_class}">'
+                        f"{escape(status_label)}</p>",
+                        unsafe_allow_html=True,
+                    )
+
+                with st.expander("Детали", expanded=(index == 1)):
                     st.caption(f"Статус: {status_label} · conf={match.confidence:.2f}")
 
                     if match.requirements:
