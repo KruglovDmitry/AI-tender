@@ -12,7 +12,10 @@ from ai_tender.models import (
     get_settings,
 )
 from ai_tender.ocr import ocr_status
-from ai_tender.graph import analyze
+from ai_tender.graph import analyze, warm_up_graph
+
+# Компиляция структуры графа при старте приложения (один раз).
+warm_up_graph()
 
 st.set_page_config(page_title="AI Tender", page_icon="📋", layout="wide")
 st.title("AI Tender")
