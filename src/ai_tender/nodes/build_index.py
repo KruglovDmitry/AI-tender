@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..index import indexed_file_paths, load_or_build_assets_index
-from ..models import Settings
-from ..state import PipelineState
+from ..services.index_service import indexed_file_paths, load_or_build_assets_index
+from ..models import PipelineState, Settings
 from .common import progress
 
 

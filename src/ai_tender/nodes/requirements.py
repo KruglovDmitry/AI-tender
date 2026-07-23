@@ -11,17 +11,16 @@ from typing import Any, Literal
 from llama_index.core import Document
 from llama_index.core.llms import LLM
 
-from ..anchors import numbered_excerpt
-from ..llm_trace import trace_llm, trace_note
-from ..models import ExtractedRequirement, Settings
-from ..providers import try_parse_llm_json
-from ..state import PipelineState
-from ..req_text import (
+from ..services.text_service import (
     attach_anchor,
     dedupe_requirements,
     merge_documents_by_file,
+    numbered_excerpt,
     source_node_from_file,
 )
+from ..services.logging_service import trace_llm, trace_note
+from ..models import ExtractedRequirement, PipelineState, Settings
+from ..providers import try_parse_llm_json
 
 
 PER_ITEM_REQUIREMENTS_SCHEMA_HINT = """

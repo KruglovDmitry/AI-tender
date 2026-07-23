@@ -7,9 +7,8 @@ from typing import Any
 
 from llama_index.core import Document
 
-from ..loaders import load_documents
-from ..models import Settings
-from ..state import PipelineState
+from ..services.loader_service import load_documents
+from ..models import PipelineState, Settings
 
 
 def progress(state: PipelineState, message: str, value: float) -> None:

@@ -120,6 +120,33 @@ def test_match_matched_true_with_none_status_becomes_partial() -> None:
     assert len(match.asset_hits) == 1
 
 
+def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:
+    from ai_tender.nodes import match as match_mod
+    from ai_tender.models import Settings
+
+    calls: list[str] = []
+
+    def fake_match_one(*, llm, scope_item, requirements, assets_index, top_k, user_instruction):
+        name = str(scope_item.get("name") or "")
+        calls.append(name)
+        return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.partial)
+
+    monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
+    settings = Settings(match_parallelism=4)
+    state = {
+        "settings": settings,
+        "llm": MagicMock(),
+        "assets_index": object(),
+        "scope_items": [{"name": f"поз-{i}"} for i in range(6)],
+        "requirements_by_item": [[] for _ in range(6)],
+        "progress": None,
+    }
+    out = match_mod.node_match_positions(state)
+    names = [item.scope_name for item in out["position_matches"]]
+    assert names == [f"поз-{i}" for i in range(6)]
+    assert sorted(calls) == names
+
+
 def test_build_tender_verdict_fallback_on_empty_text() -> None:
     llm = MagicMock()
     llm.complete.return_value = '{"suitable": true, "label": "подходит", "verdict": ""}'

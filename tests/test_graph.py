@@ -2,12 +2,12 @@ from pathlib import Path
 
 from ai_tender.graph import (
     build_graph,
+    export_graph_diagram,
     route_after_requirements,
     route_after_scope,
     warm_up_graph,
 )
 from ai_tender.nodes.scope import scope_has_detailed_list
-from ai_tender.utils import export_graph_diagram
 
 
 def test_build_graph_compiles() -> None:

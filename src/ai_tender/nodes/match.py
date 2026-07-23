@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from llama_index.core.llms import LLM
 
-from ..index import node_to_evidence, retrieve_for_queries
-from ..llm_trace import trace_llm, trace_note, trace_retrieval
+from ..services.index_service import node_to_evidence, retrieve_for_queries
+from ..services.logging_service import trace_llm, trace_note, trace_retrieval
 from ..models import (
     DEFAULT_USER_INSTRUCTION,
     Evidence,
     ExtractedRequirement,
+    PipelineState,
     PositionMatchStatus,
     ScopePositionMatch,
     Settings,
 )
 from ..providers import parse_llm_json
-from ..state import PipelineState
 from .common import progress
 
 
@@ -278,6 +280,27 @@ def retrieve_hits_for_position(
     return hits
 
 
+def _match_one_position(
+    *,
+    llm: LLM,
+    scope_item: dict[str, Any],
+    requirements: list[ExtractedRequirement],
+    assets_index,
+    top_k: int,
+    user_instruction: str | None,
+) -> ScopePositionMatch:
+    name = str(scope_item.get("name") or "").strip() or "позиция"
+    hits = retrieve_hits_for_position(name, requirements, assets_index, top_k=top_k)
+    asset_evidence = [node_to_evidence(hit.node, hit.score) for hit in hits]
+    return match_scope_position(
+        llm,
+        scope_item=scope_item,
+        requirements=requirements,
+        asset_hits=asset_evidence,
+        user_instruction=user_instruction,
+    )
+
+
 def node_match_positions(state: PipelineState) -> dict[str, Any]:
     settings: Settings = state["settings"]
     scope_items = list(state.get("scope_items") or [])
@@ -285,25 +308,58 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
     assets_index = state.get("assets_index")
     top_k = max(settings.top_k, 5)
     total = max(len(scope_items), 1)
-    matches: list[ScopePositionMatch] = []
+    workers = max(1, int(settings.match_parallelism or 1))
+    llm = state["llm"]
+    instruction = settings.user_instruction
 
-    for index, scope_item in enumerate(scope_items):
-        name = str(scope_item.get("name") or "").strip() or f"позиция {index + 1}"
-        progress(
-            state,
-            f"Подбор эталона: {index + 1}/{len(scope_items)} — {name[:60]}",
-            0.7 + 0.2 * (index / total),
-        )
+    if not scope_items:
+        return {"position_matches": []}
+
+    progress(
+        state,
+        f"Подбор эталона: {len(scope_items)} позиций (parallelism={workers})",
+        0.72,
+    )
+
+    def _one(index: int) -> tuple[int, ScopePositionMatch]:
+        scope_item = scope_items[index]
         requirements = reqs_by_item[index] if index < len(reqs_by_item) else []
-        hits = retrieve_hits_for_position(name, requirements, assets_index, top_k=top_k)
-        asset_evidence = [node_to_evidence(hit.node, hit.score) for hit in hits]
-        match = match_scope_position(
-            state["llm"],
+        match = _match_one_position(
+            llm=llm,
             scope_item=scope_item,
             requirements=requirements,
-            asset_hits=asset_evidence,
-            user_instruction=settings.user_instruction,
+            assets_index=assets_index,
+            top_k=top_k,
+            user_instruction=instruction,
         )
-        matches.append(match)
+        return index, match
 
-    return {"position_matches": matches}
+    matches: list[ScopePositionMatch | None] = [None] * len(scope_items)
+    done = 0
+    done_lock = threading.Lock()
+
+    def _on_done(index: int, match: ScopePositionMatch) -> None:
+        nonlocal done
+        matches[index] = match
+        with done_lock:
+            done += 1
+            current = done
+        name = str(scope_items[index].get("name") or "").strip() or f"позиция {index + 1}"
+        progress(
+            state,
+            f"Подбор эталона: {current}/{len(scope_items)} — {name[:60]}",
+            0.7 + 0.2 * (current / total),
+        )
+
+    if workers <= 1 or len(scope_items) == 1:
+        for index in range(len(scope_items)):
+            idx, match = _one(index)
+            _on_done(idx, match)
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(scope_items))) as pool:
+            futures = {pool.submit(_one, index): index for index in range(len(scope_items))}
+            for future in as_completed(futures):
+                idx, match = future.result()
+                _on_done(idx, match)
+
+    return {"position_matches": [item for item in matches if item is not None]}

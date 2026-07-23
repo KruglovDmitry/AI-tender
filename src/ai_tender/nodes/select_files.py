@@ -9,9 +9,8 @@ from typing import Any
 from llama_index.core.llms import LLM
 
 from ..providers import parse_llm_json
-from ..loaders import READABLE_SUFFIXES, TenderInventory, inventory_tender_folder
-from ..models import Settings
-from ..state import PipelineState
+from ..services.loader_service import READABLE_SUFFIXES, TenderInventory, inventory_tender_folder
+from ..models import PipelineState, Settings
 
 SELECT_SCHEMA_HINT = """
 Верни ТОЛЬКО JSON-объект:

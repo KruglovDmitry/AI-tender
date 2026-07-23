@@ -4,9 +4,14 @@ from unittest.mock import patch
 
 from docx import Document
 
-from ai_tender.loaders import is_ignored_file, load_documents
-from ai_tender.ocr import ocr_status
-from ai_tender.utils import configure_rarfile, expand_archives, find_unrar_tool, unpack_zip
+from ai_tender.services.archive_service import (
+    configure_rarfile,
+    expand_archives,
+    find_unrar_tool,
+    unpack_zip,
+)
+from ai_tender.services.loader_service import is_ignored_file, load_documents
+from ai_tender.services.ocr_service import ocr_status
 
 
 def test_find_unrar_tool_prefers_env(tmp_path: Path, monkeypatch) -> None:
@@ -30,7 +35,7 @@ def test_configure_rarfile_sets_tool(tmp_path: Path, monkeypatch) -> None:
 def test_ocr_status_reports_missing_tesseract(monkeypatch) -> None:
     monkeypatch.delenv("TESSERACT_CMD", raising=False)
     monkeypatch.delenv("TESSERACT_PATH", raising=False)
-    with patch("ai_tender.ocr.tesseract_path", return_value=None):
+    with patch("ai_tender.services.ocr_service.tesseract_path", return_value=None):
         ok, message = ocr_status()
     assert not ok
     assert "Tesseract" in message
@@ -72,7 +77,7 @@ def test_load_documents_reads_doc_with_mock(tmp_path: Path, monkeypatch) -> None
     def fake_extract_doc_text(file_path: Path, **kwargs: object) -> tuple[str, str | None]:
         return "Требование из legacy doc: класс точности 1.0.", None
 
-    monkeypatch.setattr("ai_tender.loaders.extract_doc_text", fake_extract_doc_text)
+    monkeypatch.setattr("ai_tender.services.loader_service.extract_doc_text", fake_extract_doc_text)
 
     docs, warnings = load_documents(tmp_path, corpus="tender")
 

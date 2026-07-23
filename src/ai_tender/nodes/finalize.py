@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..state import PipelineState
+from ..models import PipelineState
 from .common import progress
 
 

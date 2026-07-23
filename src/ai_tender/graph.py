@@ -8,8 +8,8 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from .llm_trace import clear_trace, start_trace
-from .models import AnalysisReport, Settings, get_settings
+from .services.logging_service import clear_trace, start_trace
+from .models import AnalysisReport, PipelineState, ProgressCallback, Settings, get_settings
 from .nodes.build_index import node_build_assets_index
 from .nodes.finalize import node_finalize
 from .nodes.match import node_match_positions
@@ -26,8 +26,32 @@ from .nodes.scope import (
 from .nodes.select_files import node_select_files
 from .nodes.verdict import node_build_verdict
 from .providers import build_llm
-from .state import PipelineState, ProgressCallback
-from .utils import export_graph_diagram
+
+DEFAULT_GRAPH_DIAGRAM_DIR = Path(__file__).resolve().parents[2] / "docs"
+
+
+def export_graph_diagram(
+    compiled: Any,
+    out_dir: Path | None = None,
+) -> dict[str, Path]:
+    """Сохранить структуру графа: Mermaid (.mmd) и, по возможности, PNG."""
+    out_dir = Path(out_dir or DEFAULT_GRAPH_DIAGRAM_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    drawable = compiled.get_graph()
+    mmd_path = out_dir / "pipeline_graph.mmd"
+    png_path = out_dir / "pipeline_graph.png"
+    mmd_path.write_text(drawable.draw_mermaid(), encoding="utf-8")
+
+    written: dict[str, Path] = {"mermaid": mmd_path}
+    try:
+        png_path.write_bytes(drawable.draw_mermaid_png())
+        written["png"] = png_path
+    except Exception:
+        # PNG тянет mermaid.ink / локальный рендер — без сети не обязателен.
+        pass
+    return written
+
 
 # Реэкспорт для тестов / внешних импортов
 __all__ = [
@@ -35,6 +59,7 @@ __all__ = [
     "ProgressCallback",
     "analyze",
     "build_graph",
+    "export_graph_diagram",
     "get_compiled_graph",
     "route_after_requirements",
     "route_after_scope",
@@ -121,6 +146,7 @@ def analyze(
                 "llm_model": settings.llm_model,
                 "max_reqs_per_scope_item": settings.max_reqs_per_scope_item,
                 "max_requirement_files": settings.max_requirement_files,
+                "match_parallelism": settings.match_parallelism,
                 "top_k": settings.top_k,
             },
         )

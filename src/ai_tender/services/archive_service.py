@@ -1,4 +1,4 @@
-"""Утилиты: распаковка архивов перед чтением документов LlamaIndex."""
+"""Распаковка ZIP/RAR перед чтением документов."""
 
 from __future__ import annotations
 
@@ -7,34 +7,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
 
 ARCHIVES = {".zip", ".rar"}
 MAX_ARCHIVE_DEPTH = 3
-DEFAULT_GRAPH_DIAGRAM_DIR = Path(__file__).resolve().parents[2] / "docs"
-
-
-def export_graph_diagram(
-    compiled: Any,
-    out_dir: Path | None = None,
-) -> dict[str, Path]:
-    """Сохранить структуру графа: Mermaid (.mmd) и, по возможности, PNG."""
-    out_dir = Path(out_dir or DEFAULT_GRAPH_DIAGRAM_DIR)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    drawable = compiled.get_graph()
-    mmd_path = out_dir / "pipeline_graph.mmd"
-    png_path = out_dir / "pipeline_graph.png"
-    mmd_path.write_text(drawable.draw_mermaid(), encoding="utf-8")
-
-    written: dict[str, Path] = {"mermaid": mmd_path}
-    try:
-        png_path.write_bytes(drawable.draw_mermaid_png())
-        written["png"] = png_path
-    except Exception:
-        # PNG тянет mermaid.ink / локальный рендер — без сети не обязателен.
-        pass
-    return written
 
 
 def _is_within(directory: Path, target: Path) -> bool:

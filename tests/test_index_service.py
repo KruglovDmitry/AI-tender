@@ -2,7 +2,7 @@ from pathlib import Path
 
 from docx import Document
 
-from ai_tender.index import cache_key, folder_fingerprint
+from ai_tender.services.index_service import cache_key, folder_fingerprint
 
 
 def _write_docx(path: Path, text: str) -> None:

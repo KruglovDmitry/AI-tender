@@ -11,7 +11,7 @@ from llama_index.core.schema import BaseNode, NodeWithScore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.retrievers.bm25 import BM25Retriever
 
-from .loaders import load_documents, split_documents
+from .loader_service import load_documents, split_documents
 
 
 def _resolve_device(device: str | None) -> str | None:
@@ -213,7 +213,7 @@ def _page_from_metadata(meta: dict) -> int | None:
 
 
 def node_to_evidence(node: BaseNode, score: float | None = None):
-    from .models import Evidence
+    from ..models import Evidence
 
     meta = node.metadata or {}
     text = node.get_content(metadata_mode="none")

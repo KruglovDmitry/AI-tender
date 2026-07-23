@@ -8,11 +8,9 @@ from typing import Any, Literal
 from llama_index.core import Document
 from llama_index.core.llms import LLM
 
-from ..anchors import numbered_excerpt
+from ..services.text_service import merge_documents_by_file, numbered_excerpt
+from ..models import PipelineState, Settings
 from ..providers import parse_llm_json
-from ..req_text import merge_documents_by_file
-from ..models import Settings
-from ..state import PipelineState
 
 
 SCOPE_SCHEMA_HINT = """

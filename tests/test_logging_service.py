@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ai_tender.llm_trace import clear_trace, get_trace, start_trace, trace_llm, trace_retrieval
+from ai_tender.services.logging_service import clear_trace, get_trace, start_trace, trace_llm, trace_retrieval
 
 
 def test_llm_trace_writes_files(tmp_path: Path) -> None:

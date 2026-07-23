@@ -1,13 +1,13 @@
 from llama_index.core import Document
 from llama_index.core.schema import TextNode
 
-from ai_tender.anchors import locate_quote
-from ai_tender.models import ExtractedRequirement
-from ai_tender.req_text import (
+from ai_tender.services.text_service import (
     attach_anchor,
     dedupe_requirements,
+    locate_quote,
     merge_documents_by_file,
 )
+from ai_tender.models import ExtractedRequirement
 
 
 def _node(text: str) -> TextNode:

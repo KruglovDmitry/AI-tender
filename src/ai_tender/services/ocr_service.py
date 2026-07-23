@@ -9,7 +9,7 @@ from llama_index.core import Document
 
 MIN_TEXT_LEN = 20
 
-_REPO_TESSDATA = Path(__file__).resolve().parents[2] / "data" / "tessdata"
+_REPO_TESSDATA = Path(__file__).resolve().parents[3] / "data" / "tessdata"
 
 
 def tesseract_path() -> Path | None:

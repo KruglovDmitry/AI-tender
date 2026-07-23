@@ -12,7 +12,7 @@ from ai_tender.models import (
     PositionMatchStatus,
     get_settings,
 )
-from ai_tender.ocr import ocr_status
+from ai_tender.services.ocr_service import ocr_status
 from ai_tender.graph import analyze, warm_up_graph
 
 # Компиляция структуры графа при старте приложения (один раз).

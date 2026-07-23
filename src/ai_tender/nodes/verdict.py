@@ -7,9 +7,8 @@ from typing import Any
 
 from llama_index.core.llms import LLM
 
-from ..models import PositionMatchStatus, ScopePositionMatch
+from ..models import PipelineState, PositionMatchStatus, ScopePositionMatch
 from ..providers import parse_llm_json
-from ..state import PipelineState
 from .common import progress
 
 

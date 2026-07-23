@@ -11,8 +11,8 @@ from pathlib import Path
 from llama_index.core import Document, SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 
-from .ocr import extract_pdf_with_ocr, ocr_status
-from .utils import ARCHIVES, expand_archives
+from .archive_service import ARCHIVES, expand_archives
+from .ocr_service import extract_pdf_with_ocr, ocr_status
 
 # Форматы, которые SimpleDirectoryReader читает через llama-index-readers-file.
 SUPPORTED_SUFFIXES = {

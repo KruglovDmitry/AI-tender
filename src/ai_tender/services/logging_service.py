@@ -1,14 +1,15 @@
-"""Трассировка LLM-запросов и retrieval для отладки нестабильных прогонов."""
+"""Логирование LLM-запросов и retrieval для отладки прогонов."""
 
 from __future__ import annotations
 
 import json
+import threading
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-_TRACE: ContextVar["LlmTrace | None"] = ContextVar("ai_tender_llm_trace", default=None)
+_TRACE: ContextVar["LlmTrace | None"] = ContextVar("ai_tender_llm_logging", default=None)
 
 
 class LlmTrace:
@@ -16,6 +17,7 @@ class LlmTrace:
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._seq = 0
+        self._lock = threading.Lock()
         self._jsonl = self.run_dir / "events.jsonl"
         self._meta_path = self.run_dir / "meta.json"
         payload = {
@@ -47,21 +49,22 @@ class LlmTrace:
         response: str,
         meta: dict[str, Any] | None = None,
     ) -> None:
-        seq = self._next_seq()
-        stem = f"{seq:03d}_{_safe_stage(stage)}"
-        (self.run_dir / f"{stem}_request.txt").write_text(prompt, encoding="utf-8")
-        (self.run_dir / f"{stem}_response.txt").write_text(response, encoding="utf-8")
-        event = {
-            "seq": seq,
-            "kind": "llm",
-            "stage": stage,
-            "prompt_chars": len(prompt),
-            "response_chars": len(response),
-            "request_file": f"{stem}_request.txt",
-            "response_file": f"{stem}_response.txt",
-            **(meta or {}),
-        }
-        self._append_event(event)
+        with self._lock:
+            seq = self._next_seq()
+            stem = f"{seq:03d}_{_safe_stage(stage)}"
+            (self.run_dir / f"{stem}_request.txt").write_text(prompt, encoding="utf-8")
+            (self.run_dir / f"{stem}_response.txt").write_text(response, encoding="utf-8")
+            event = {
+                "seq": seq,
+                "kind": "llm",
+                "stage": stage,
+                "prompt_chars": len(prompt),
+                "response_chars": len(response),
+                "request_file": f"{stem}_request.txt",
+                "response_file": f"{stem}_response.txt",
+                **(meta or {}),
+            }
+            self._append_event(event)
 
     def log_retrieval(
         self,
@@ -71,57 +74,62 @@ class LlmTrace:
         hits: list[dict[str, Any]],
         meta: dict[str, Any] | None = None,
     ) -> None:
-        seq = self._next_seq()
-        stem = f"{seq:03d}_{_safe_stage(stage)}"
-        payload = {
-            "stage": stage,
-            "query": query,
-            "hits": hits,
-            **(meta or {}),
-        }
-        (self.run_dir / f"{stem}.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
-        event = {
-            "seq": seq,
-            "kind": "retrieval",
-            "stage": stage,
-            "query_chars": len(query),
-            "hits_count": len(hits),
-            "file": f"{stem}.json",
-            **(meta or {}),
-        }
-        self._append_event(event)
+        with self._lock:
+            seq = self._next_seq()
+            stem = f"{seq:03d}_{_safe_stage(stage)}"
+            payload = {
+                "stage": stage,
+                "query": query,
+                "hits": hits,
+                **(meta or {}),
+            }
+            (self.run_dir / f"{stem}.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            event = {
+                "seq": seq,
+                "kind": "retrieval",
+                "stage": stage,
+                "query_chars": len(query),
+                "hits_count": len(hits),
+                "file": f"{stem}.json",
+                **(meta or {}),
+            }
+            self._append_event(event)
 
     def log_note(self, stage: str, message: str, meta: dict[str, Any] | None = None) -> None:
-        seq = self._next_seq()
-        event = {
-            "seq": seq,
-            "kind": "note",
-            "stage": stage,
-            "message": message,
-            **(meta or {}),
-        }
-        self._append_event(event)
-        (self.run_dir / f"{seq:03d}_{_safe_stage(stage)}_note.txt").write_text(
-            message if not meta else f"{message}\n\n{json.dumps(meta, ensure_ascii=False, indent=2, default=str)}",
-            encoding="utf-8",
-        )
+        with self._lock:
+            seq = self._next_seq()
+            event = {
+                "seq": seq,
+                "kind": "note",
+                "stage": stage,
+                "message": message,
+                **(meta or {}),
+            }
+            self._append_event(event)
+            (self.run_dir / f"{seq:03d}_{_safe_stage(stage)}_note.txt").write_text(
+                message
+                if not meta
+                else f"{message}\n\n{json.dumps(meta, ensure_ascii=False, indent=2, default=str)}",
+                encoding="utf-8",
+            )
 
     def finish(self, extra: dict[str, Any] | None = None) -> None:
-        try:
-            data = json.loads(self._meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-        data["finished_at"] = datetime.now().isoformat(timespec="seconds")
-        data["events"] = self._seq
-        if extra:
-            data.update(extra)
-        self._meta_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        with self._lock:
+            try:
+                data = json.loads(self._meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
+            data["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            data["events"] = self._seq
+            if extra:
+                data.update(extra)
+            self._meta_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
 
 
 def _safe_stage(stage: str) -> str:

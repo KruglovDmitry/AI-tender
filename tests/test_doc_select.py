@@ -9,7 +9,7 @@ from ai_tender.nodes.select_files import (
     select_files_heuristic,
     select_tender_files_by_llm,
 )
-from ai_tender.loaders import inventory_tender_folder
+from ai_tender.services.loader_service import inventory_tender_folder
 
 
 def _entry(path: str, suffix: str = ".pdf", size: int = 1024) -> object:

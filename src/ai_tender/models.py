@@ -1,7 +1,11 @@
 from enum import StrEnum
 from pathlib import Path
+import operator
+from collections.abc import Callable
+from typing import Annotated, Any, TypedDict
 
 from dotenv import load_dotenv
+from llama_index.core import Document
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -115,6 +119,8 @@ class Settings(BaseSettings):
     max_requirement_files: int = 3
     # Параллельные LLM-запросы требований по позициям внутри одного файла.
     requirements_parallelism: int = 6
+    # Параллельный подбор эталона по позициям (retrieval + match LLM).
+    match_parallelism: int = 4
 
     # Трассировка LLM/retrieval в data/llm_traces/run_*
     llm_trace_enabled: bool = True
@@ -130,3 +136,45 @@ class Settings(BaseSettings):
 
 def get_settings() -> Settings:
     return Settings()
+
+
+ProgressCallback = Callable[[str, float], None]
+
+
+class PipelineState(TypedDict, total=False):
+    """Состояние LangGraph-пайплайна."""
+
+    tender_path: str
+    assets_path: str
+    llm: Any
+    settings: Any
+    progress: Any
+    cleanup_box: Any
+
+    inventory: Any
+    catalog_entries: list[Any]
+    ranked_paths: list[str]
+    doc_selection: dict[str, Any]
+
+    loaded_labels: list[str]
+    documents: Annotated[list[Document], operator.add]
+    scope_queue: list[str]
+    scope_files_used: Annotated[list[str], operator.add]
+    warnings: Annotated[list[str], operator.add]
+
+    scope_items: list[dict[str, Any]]
+    scope_meta: dict[str, Any]
+
+    requirements_by_item: list[list[ExtractedRequirement]]
+    requirements_stats: dict[str, Any]
+    requirement_queue: list[str]
+    requirement_files_tried: list[str]
+    current_requirement_file: str
+
+    assets_index: Any
+    indexed_files: list[str]
+    index_reused: bool
+
+    position_matches: list[ScopePositionMatch]
+    verdict: str
+    query_selection: dict[str, Any]
