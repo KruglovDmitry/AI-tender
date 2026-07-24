@@ -1,4 +1,4 @@
-"""Общие хелперы нод: прогресс и загрузка файлов тендера."""
+"""Общие хелперы нод: прогресс, загрузка файлов, дедуп по файлу."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 from llama_index.core import Document
 
 from ..services.loader_service import load_documents
-from ..models import PipelineState, Settings
+from ..models import Evidence, PipelineState, Settings
 
 EXT_PREF = {
     ".docx": 0,
@@ -139,3 +139,63 @@ def ensure_docs_for_label(
     if extra:
         matched = docs_for_label(docs + extra, label)
     return matched, updates
+
+
+def _file_key(raw: str, fallback: object) -> str:
+    key = (raw or "").replace("\\", "/").casefold()
+    return key or f"id:{id(fallback)}"
+
+
+def _dedupe_by_file(
+    items: list,
+    *,
+    file_of,
+    score_of,
+    limit: int | None = None,
+) -> list:
+    """Лучший элемент на файл (по score), порядок первого появления."""
+    best: dict[str, Any] = {}
+    order: list[str] = []
+    for item in items:
+        key = _file_key(str(file_of(item) or ""), item)
+        if key not in best:
+            order.append(key)
+            best[key] = item
+            continue
+        prev = best[key]
+        if (score_of(item) or 0.0) > (score_of(prev) or 0.0):
+            best[key] = item
+    output = [best[key] for key in order]
+    if limit is not None:
+        return output[: max(0, limit)]
+    return output
+
+
+def dedupe_evidence_by_file(
+    hits: list[Evidence],
+    *,
+    limit: int | None = None,
+) -> list[Evidence]:
+    """Один лучший Evidence на файл (по score)."""
+    return _dedupe_by_file(
+        hits,
+        file_of=lambda hit: hit.file,
+        score_of=lambda hit: hit.score,
+        limit=limit,
+    )
+
+
+def _hit_file_path(hit) -> str:
+    node = getattr(hit, "node", None)
+    meta = (getattr(node, "metadata", None) or {}) if node is not None else {}
+    return str(meta.get("file_path") or meta.get("file_name") or "")
+
+
+def dedupe_hits_by_file(hits: list, *, limit: int | None = None) -> list:
+    """Один лучший retrieval-hit на файл (по score)."""
+    return _dedupe_by_file(
+        hits,
+        file_of=_hit_file_path,
+        score_of=lambda hit: getattr(hit, "score", None),
+        limit=limit,
+    )

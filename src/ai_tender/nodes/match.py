@@ -21,7 +21,7 @@ from ..models import (
     Settings,
 )
 from ..providers import parse_llm_json
-from .common import progress
+from .common import dedupe_evidence_by_file, dedupe_hits_by_file, progress
 
 
 POSITION_MATCH_SCHEMA_HINT = """
@@ -48,25 +48,7 @@ POSITION_MATCH_SCHEMA_HINT = """
 """.strip()
 
 
-def dedupe_evidence_by_file(hits: list[Evidence]) -> list[Evidence]:
-    """Один лучший фрагмент на файл (по score), порядок первого появления."""
-    best: dict[str, Evidence] = {}
-    order: list[str] = []
-    for hit in hits:
-        key = (hit.file or "").replace("\\", "/").casefold() or str(id(hit))
-        if key not in best:
-            order.append(key)
-            best[key] = hit
-            continue
-        prev = best[key]
-        if (hit.score or 0.0) > (prev.score or 0.0):
-            best[key] = hit
-    return [best[key] for key in order]
-
-
-def _stable_requirements(
-    requirements: list[ExtractedRequirement],
-) -> list[ExtractedRequirement]:
+def _stable_requirements(requirements: list[ExtractedRequirement],) -> list[ExtractedRequirement]:
     kind_rank = {"product": 0, "specs": 1, "other": 2}
     return sorted(
         requirements,
@@ -79,14 +61,7 @@ def _stable_requirements(
     )
 
 
-def match_scope_position(
-    llm: LLM,
-    *,
-    scope_item: dict[str, Any],
-    requirements: list[ExtractedRequirement],
-    asset_hits: list[Evidence],
-    user_instruction: str | None = None,
-) -> ScopePositionMatch:
+def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: list[ExtractedRequirement], asset_hits: list[Evidence], user_instruction: str | None = None,) -> ScopePositionMatch:
     """Подбор варианта из эталона для одной позиции перечня."""
     scope_name = str(scope_item.get("name") or "").strip()
     qty = scope_item.get("qty")
@@ -181,12 +156,7 @@ def match_scope_position(
     return base
 
 
-def position_to_query_text(
-    scope_name: str,
-    requirements: list[ExtractedRequirement],
-    *,
-    max_reqs: int = 8,
-) -> str:
+def position_to_query_text(scope_name: str, requirements: list[ExtractedRequirement], *, max_reqs: int = 8,) -> str:
     """Текстовый запрос в индекс эталонов по позиции + её требованиям."""
     kind_rank = {"product": 0, "specs": 1, "other": 2}
     ranked = sorted(
@@ -206,38 +176,7 @@ def position_to_query_text(
     return "\n".join(lines).strip()
 
 
-def _hit_file_key(hit) -> str:
-    node = getattr(hit, "node", None)
-    meta = (getattr(node, "metadata", None) or {}) if node is not None else {}
-    raw = str(meta.get("file_path") or meta.get("file_name") or "")
-    return raw.replace("\\", "/").casefold()
-
-
-def dedupe_hits_by_file(hits: list, *, limit: int | None = None) -> list:
-    """Оставляет лучший hit на файл (по score)."""
-    best: dict[str, Any] = {}
-    order: list[str] = []
-    for hit in hits:
-        key = _hit_file_key(hit) or f"id:{id(hit)}"
-        if key not in best:
-            order.append(key)
-            best[key] = hit
-            continue
-        prev = best[key]
-        if (getattr(hit, "score", None) or 0.0) > (getattr(prev, "score", None) or 0.0):
-            best[key] = hit
-    output = [best[key] for key in order]
-    if limit is not None:
-        return output[: max(0, limit)]
-    return output
-
-
-def retrieve_hits_for_position(
-    scope_name: str,
-    requirements: list[ExtractedRequirement],
-    assets_index,
-    top_k: int,
-) -> list:
+def retrieve_hits_for_position(scope_name: str, requirements: list[ExtractedRequirement], assets_index, top_k: int,) -> list:
     query = position_to_query_text(scope_name, requirements)
     if not query:
         trace_note(
@@ -280,15 +219,7 @@ def retrieve_hits_for_position(
     return hits
 
 
-def _match_one_position(
-    *,
-    llm: LLM,
-    scope_item: dict[str, Any],
-    requirements: list[ExtractedRequirement],
-    assets_index,
-    top_k: int,
-    user_instruction: str | None,
-) -> ScopePositionMatch:
+def _match_one_position(*, llm: LLM, scope_item: dict[str, Any], requirements: list[ExtractedRequirement], assets_index, top_k: int, user_instruction: str | None,) -> ScopePositionMatch:
     name = str(scope_item.get("name") or "").strip() or "позиция"
     hits = retrieve_hits_for_position(name, requirements, assets_index, top_k=top_k)
     asset_evidence = [node_to_evidence(hit.node, hit.score) for hit in hits]

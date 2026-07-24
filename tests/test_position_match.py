@@ -2,8 +2,8 @@ from unittest.mock import MagicMock
 
 from ai_tender.nodes.scope import scope_has_detailed_list
 from ai_tender.models import Evidence, ExtractedRequirement, PositionMatchStatus, ScopePositionMatch
+from ai_tender.nodes.common import dedupe_evidence_by_file
 from ai_tender.nodes.match import (
-    dedupe_evidence_by_file,
     match_scope_position,
     position_to_query_text,
 )
