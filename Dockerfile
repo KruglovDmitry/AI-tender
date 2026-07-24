@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     UNRAR_TOOL=/usr/bin/unrar-free \
     SEVEN_ZIP_CMD=/usr/bin/7z \
-    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/ \
+    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
     TESSERACT_CMD=/usr/bin/tesseract
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

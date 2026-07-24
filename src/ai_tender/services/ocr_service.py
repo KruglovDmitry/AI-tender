@@ -108,13 +108,15 @@ def _languages_available(languages: str) -> list[str]:
 
 
 def _ocr_config() -> str:
-    """--tessdata-dir только для нестандартной папки (например data/tessdata в проекте)."""
+    """Всегда передаём --tessdata-dir, если папка найдена.
+
+    Иначе pytesseract опирается на TESSDATA_PREFIX, который в Docker иногда
+    указывает на родителя (.../5/), а не на .../5/tessdata/.
+    """
     folder = tessdata_dir()
     if folder is None:
         return ""
-    if folder.resolve() in {path.resolve() for path in _system_tessdata_candidates()}:
-        return ""
-    return f"--tessdata-dir {folder}"
+    return f'--tessdata-dir "{folder}"'
 
 
 def ocr_status(languages: str = "rus+eng") -> tuple[bool, str]:
@@ -172,42 +174,45 @@ def extract_pdf_with_ocr(
     documents: list[Document] = []
     ocr_pages = 0
 
-    with fitz.open(path) as pdf:
-        for page_index, page in enumerate(pdf, start=1):
-            text = (page.get_text() or "").strip()
-            used_ocr = False
+    try:
+        with fitz.open(path) as pdf:
+            for page_index, page in enumerate(pdf, start=1):
+                text = (page.get_text() or "").strip()
+                used_ocr = False
 
-            if len(text) < MIN_TEXT_LEN:
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                text = (
-                    pytesseract.image_to_string(
-                        image,
-                        lang=languages,
-                        config=ocr_config,
+                if len(text) < MIN_TEXT_LEN:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    text = (
+                        pytesseract.image_to_string(
+                            image,
+                            lang=languages,
+                            config=ocr_config,
+                        )
+                        or ""
+                    ).strip()
+                    used_ocr = bool(text)
+                    if used_ocr:
+                        ocr_pages += 1
+
+                if len(text) < MIN_TEXT_LEN:
+                    continue
+
+                documents.append(
+                    Document(
+                        text=text,
+                        metadata={
+                            "file_name": Path(label).name,
+                            "file_path": label,
+                            "corpus": corpus,
+                            "location": f"стр. {page_index}",
+                            "page_number": page_index,
+                            "ocr": used_ocr,
+                        },
                     )
-                    or ""
-                ).strip()
-                used_ocr = bool(text)
-                if used_ocr:
-                    ocr_pages += 1
-
-            if len(text) < MIN_TEXT_LEN:
-                continue
-
-            documents.append(
-                Document(
-                    text=text,
-                    metadata={
-                        "file_name": Path(label).name,
-                        "file_path": label,
-                        "corpus": corpus,
-                        "location": f"стр. {page_index}",
-                        "page_number": page_index,
-                        "ocr": used_ocr,
-                    },
                 )
-            )
+    except Exception as exc:
+        return [], f"OCR ошибка для {label}: {exc}"
 
     if not documents:
         return [], "OCR не извлёк текст"

@@ -39,6 +39,11 @@ def configure_embeddings(model_name: str, device: str | None = None) -> HuggingF
 
 
 def folder_fingerprint(folder: Path) -> str:
+    """Отпечаток состава папки: относительный путь + размер (без mtime).
+
+    Без mtime, чтобы кэш переживал копирование/распаковку архива на другой машине.
+    Смена содержимого при том же размере не инвалидирует кэш (редко для PDF/DOCX).
+    """
     parts: list[str] = []
     for path in sorted(folder.rglob("*")):
         if not path.is_file():
@@ -58,8 +63,7 @@ def folder_fingerprint(folder: Path) -> str:
         }:
             continue
         relative = path.relative_to(folder).as_posix()
-        stat = path.stat()
-        parts.append(f"{relative}:{stat.st_size}:{stat.st_mtime_ns}")
+        parts.append(f"{relative}:{path.stat().st_size}")
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
@@ -72,8 +76,9 @@ def cache_key(
     ocr_enabled: bool = True,
     ocr_languages: str = "rus+eng",
 ) -> str:
+    """Ключ кэша без абсолютного пути — переносим вместе с проектом к заказчику."""
     raw = (
-        f"{folder.resolve()}|{folder_fingerprint(folder)}|{embedding_model}|"
+        f"{folder_fingerprint(folder)}|{embedding_model}|"
         f"{chunk_size}|{chunk_overlap}|ocr={int(ocr_enabled)}|{ocr_languages}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]

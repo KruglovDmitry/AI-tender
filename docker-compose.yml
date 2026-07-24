@@ -8,6 +8,8 @@ services:
       - .env
     environment:
       RUNNING_IN_DOCKER: "1"
+      TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
+      TESSERACT_CMD: /usr/bin/tesseract
     volumes:
       - ./sources:/data/tender:ro
       - ./assets:/data/assets:ro
