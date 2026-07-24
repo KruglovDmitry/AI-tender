@@ -8,7 +8,7 @@ from typing import Any
 from llama_index.core.llms import LLM
 
 from ..models import PipelineState, PositionMatchStatus, ScopePositionMatch
-from ..providers import parse_llm_json
+from ..providers import complete_llm_json
 from .common import progress
 
 
@@ -27,6 +27,21 @@ VERDICT_SCHEMA_HINT = """
 - partial считай закрытием позиции (с оговорками).
 - Пиши кратко, по делу, на русском.
 """.strip()
+
+
+def _heuristic_verdict(matches: list[ScopePositionMatch], covered: int) -> str:
+    ratio = covered / max(len(matches), 1)
+    if ratio >= 0.7:
+        return (
+            f"Тендер в целом подходит: закрыто {covered} из {len(matches)} позиций."
+        )
+    if ratio >= 0.4:
+        return (
+            f"Тендер подходит с оговорками: закрыто {covered} из {len(matches)} позиций."
+        )
+    return (
+        f"Тендер скорее не подходит: закрыто лишь {covered} из {len(matches)} позиций."
+    )
 
 
 def build_tender_verdict(
@@ -68,26 +83,26 @@ def build_tender_verdict(
         f"{VERDICT_SCHEMA_HINT}\n\n"
         f"ДАННЫЕ:\n{json.dumps(payload, ensure_ascii=False)}"
     )
-    response = llm.complete(prompt)
-    data = parse_llm_json(str(response))
+    try:
+        data, _n_calls = complete_llm_json(
+            llm,
+            prompt,
+            structure_hint=VERDICT_SCHEMA_HINT,
+            trace_name="tender_verdict",
+        )
+    except Exception:
+        return _heuristic_verdict(matches, covered)
+
+    if not data:
+        return _heuristic_verdict(matches, covered)
+
     verdict = str(data.get("verdict") or "").strip()
     label = str(data.get("label") or "").strip()
     if label and verdict:
         return f"{label.capitalize()}. {verdict}"
     if verdict:
         return verdict
-    ratio = covered / max(len(matches), 1)
-    if ratio >= 0.7:
-        return (
-            f"Тендер в целом подходит: закрыто {covered} из {len(matches)} позиций."
-        )
-    if ratio >= 0.4:
-        return (
-            f"Тендер подходит с оговорками: закрыто {covered} из {len(matches)} позиций."
-        )
-    return (
-        f"Тендер скорее не подходит: закрыто лишь {covered} из {len(matches)} позиций."
-    )
+    return _heuristic_verdict(matches, covered)
 
 
 def node_build_verdict(state: PipelineState) -> dict[str, Any]:

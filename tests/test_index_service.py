@@ -25,3 +25,14 @@ def test_cache_key_includes_chunk_settings(tmp_path: Path) -> None:
     key_a = cache_key(tmp_path, "BAAI/bge-m3", 1024, 128)
     key_b = cache_key(tmp_path, "BAAI/bge-m3", 512, 128)
     assert key_a != key_b
+
+
+def test_cache_key_includes_ocr_settings(tmp_path: Path) -> None:
+    _write_docx(tmp_path / "a.docx", "Достаточно длинный текст эталонного документа.")
+    key_on = cache_key(tmp_path, "BAAI/bge-m3", 1024, 128, ocr_enabled=True)
+    key_off = cache_key(tmp_path, "BAAI/bge-m3", 1024, 128, ocr_enabled=False)
+    key_lang = cache_key(
+        tmp_path, "BAAI/bge-m3", 1024, 128, ocr_enabled=True, ocr_languages="eng"
+    )
+    assert key_on != key_off
+    assert key_on != key_lang

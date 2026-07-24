@@ -98,6 +98,21 @@ def test_match_scope_position_parses_llm() -> None:
     assert "напряжению" in match.explanation
 
 
+def test_match_scope_position_bad_json_becomes_none() -> None:
+    llm = MagicMock()
+    llm.complete.return_value = "это не json {{{"
+    hit = Evidence(file="asset.pdf", location="стр. 1", quote="Модель-10")
+    match = match_scope_position(
+        llm,
+        scope_item={"name": "позиция", "qty": 1, "unit": "шт."},
+        requirements=[],
+        asset_hits=[hit],
+    )
+    assert match.status == PositionMatchStatus.none
+    assert "разобрать" in match.explanation.lower() or "модели" in match.explanation.lower()
+    assert llm.complete.call_count == 2  # extract + repair
+
+
 def test_match_matched_true_with_none_status_becomes_partial() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
@@ -147,6 +162,33 @@ def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:
     assert sorted(calls) == names
 
 
+def test_node_match_positions_isolates_errors(monkeypatch) -> None:
+    from ai_tender.nodes import match as match_mod
+    from ai_tender.models import Settings
+
+    def fake_match_one(*, llm, scope_item, requirements, assets_index, top_k, user_instruction):
+        name = str(scope_item.get("name") or "")
+        if name == "bad":
+            raise RuntimeError("boom")
+        return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.matched)
+
+    monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
+    settings = Settings(match_parallelism=2)
+    state = {
+        "settings": settings,
+        "llm": MagicMock(),
+        "assets_index": object(),
+        "scope_items": [{"name": "ok"}, {"name": "bad"}, {"name": "ok2"}],
+        "requirements_by_item": [[], [], []],
+        "progress": None,
+    }
+    out = match_mod.node_match_positions(state)
+    names = [item.scope_name for item in out["position_matches"]]
+    assert names == ["ok", "bad", "ok2"]
+    assert out["position_matches"][1].status == PositionMatchStatus.none
+    assert any("bad" in w for w in out["warnings"])
+
+
 def test_build_tender_verdict_fallback_on_empty_text() -> None:
     llm = MagicMock()
     llm.complete.return_value = '{"suitable": true, "label": "подходит", "verdict": ""}'
@@ -160,3 +202,15 @@ def test_build_tender_verdict_fallback_on_empty_text() -> None:
     ]
     text = build_tender_verdict(llm, matches, scope_summary="тест")
     assert "1 из 2" in text or "подходит" in text.lower()
+
+
+def test_build_tender_verdict_fallback_on_llm_error() -> None:
+    llm = MagicMock()
+    llm.complete.side_effect = RuntimeError("api down")
+    matches = [
+        ScopePositionMatch(scope_name="A", status=PositionMatchStatus.matched),
+        ScopePositionMatch(scope_name="B", status=PositionMatchStatus.matched),
+        ScopePositionMatch(scope_name="C", status=PositionMatchStatus.none),
+    ]
+    text = build_tender_verdict(llm, matches)
+    assert "2 из 3" in text

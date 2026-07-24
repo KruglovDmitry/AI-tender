@@ -63,10 +63,18 @@ def folder_fingerprint(folder: Path) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def cache_key(folder: Path, embedding_model: str, chunk_size: int, chunk_overlap: int) -> str:
+def cache_key(
+    folder: Path,
+    embedding_model: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    *,
+    ocr_enabled: bool = True,
+    ocr_languages: str = "rus+eng",
+) -> str:
     raw = (
         f"{folder.resolve()}|{folder_fingerprint(folder)}|{embedding_model}|"
-        f"{chunk_size}|{chunk_overlap}"
+        f"{chunk_size}|{chunk_overlap}|ocr={int(ocr_enabled)}|{ocr_languages}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
@@ -108,7 +116,14 @@ def load_or_build_assets_index(
     ocr_languages: str = "rus+eng",
 ) -> tuple[VectorStoreIndex, list[BaseNode], list[str], bool]:
     configure_embeddings(embedding_model, device)
-    key = cache_key(assets_path, embedding_model, chunk_size, chunk_overlap)
+    key = cache_key(
+        assets_path,
+        embedding_model,
+        chunk_size,
+        chunk_overlap,
+        ocr_enabled=ocr_enabled,
+        ocr_languages=ocr_languages,
+    )
     entry_dir = cache_dir / "llama_assets" / key
     meta_path = entry_dir / "meta.json"
 
@@ -118,6 +133,8 @@ def load_or_build_assets_index(
             meta.get("embedding_model") == embedding_model
             and meta.get("chunk_size") == chunk_size
             and meta.get("chunk_overlap") == chunk_overlap
+            and meta.get("ocr_enabled") == ocr_enabled
+            and meta.get("ocr_languages") == ocr_languages
             and meta.get("folder_fingerprint") == folder_fingerprint(assets_path)
         ):
             storage = StorageContext.from_defaults(persist_dir=str(entry_dir))
@@ -141,6 +158,8 @@ def load_or_build_assets_index(
                 "embedding_model": embedding_model,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
+                "ocr_enabled": ocr_enabled,
+                "ocr_languages": ocr_languages,
                 "folder_fingerprint": folder_fingerprint(assets_path),
                 "assets_path": str(assets_path.resolve()),
                 "node_count": len(nodes),

@@ -10,7 +10,7 @@ from typing import Any
 from llama_index.core.llms import LLM
 
 from ..services.index_service import node_to_evidence, retrieve_for_queries
-from ..services.logging_service import trace_llm, trace_note, trace_retrieval
+from ..services.logging_service import trace_note, trace_retrieval
 from ..models import (
     DEFAULT_USER_INSTRUCTION,
     Evidence,
@@ -20,7 +20,7 @@ from ..models import (
     ScopePositionMatch,
     Settings,
 )
-from ..providers import parse_llm_json
+from ..providers import complete_llm_json
 from .common import dedupe_evidence_by_file, dedupe_hits_by_file, progress
 
 
@@ -113,19 +113,32 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
         f"{POSITION_MATCH_SCHEMA_HINT}\n\n"
         f"ДАННЫЕ:\n{json.dumps(payload, ensure_ascii=False)}"
     )
-    response = llm.complete(prompt)
-    raw = str(response)
-    trace_llm(
-        "match_position",
-        prompt=prompt,
-        response=raw,
-        meta={
-            "scope_name": scope_name,
-            "requirements_count": len(requirements),
-            "asset_hits_count": len(asset_hits),
-        },
-    )
-    data = parse_llm_json(raw)
+    try:
+        data, _n_calls = complete_llm_json(
+            llm,
+            prompt,
+            structure_hint=POSITION_MATCH_SCHEMA_HINT,
+            trace_name="match_position",
+        )
+    except Exception as exc:
+        trace_note(
+            "match_llm_error",
+            f"Ошибка LLM при подборе эталона: {exc}",
+            meta={"scope_name": scope_name},
+        )
+        base.status = PositionMatchStatus.none
+        base.explanation = f"Не удалось подобрать эталон (ошибка модели): {exc}"
+        return base
+
+    if data is None:
+        base.status = PositionMatchStatus.none
+        base.explanation = "Не удалось разобрать ответ модели при подборе эталона."
+        trace_note(
+            "match_json_failed",
+            base.explanation,
+            meta={"scope_name": scope_name},
+        )
+        return base
 
     status_raw = str(data.get("status") or "").strip().lower()
     matched = bool(data.get("matched", False))
@@ -219,6 +232,23 @@ def retrieve_hits_for_position(scope_name: str, requirements: list[ExtractedRequ
     return hits
 
 
+def _failed_position_match(
+    scope_item: dict[str, Any],
+    requirements: list[ExtractedRequirement],
+    *,
+    explanation: str,
+) -> ScopePositionMatch:
+    qty = scope_item.get("qty")
+    return ScopePositionMatch(
+        scope_name=str(scope_item.get("name") or "").strip() or "позиция",
+        qty=qty if isinstance(qty, (int, float)) or qty is None else None,
+        unit=str(scope_item.get("unit") or "").strip(),
+        requirements=list(requirements),
+        status=PositionMatchStatus.none,
+        explanation=explanation,
+    )
+
+
 def _match_one_position(*, llm: LLM, scope_item: dict[str, Any], requirements: list[ExtractedRequirement], assets_index, top_k: int, user_instruction: str | None,) -> ScopePositionMatch:
     name = str(scope_item.get("name") or "").strip() or "позиция"
     hits = retrieve_hits_for_position(name, requirements, assets_index, top_k=top_k)
@@ -252,26 +282,43 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
         0.72,
     )
 
-    def _one(index: int) -> tuple[int, ScopePositionMatch]:
+    def _one(index: int) -> tuple[int, ScopePositionMatch, str | None]:
         scope_item = scope_items[index]
         requirements = reqs_by_item[index] if index < len(reqs_by_item) else []
-        match = _match_one_position(
-            llm=llm,
-            scope_item=scope_item,
-            requirements=requirements,
-            assets_index=assets_index,
-            top_k=top_k,
-            user_instruction=instruction,
-        )
-        return index, match
+        name = str(scope_item.get("name") or "").strip() or f"позиция {index + 1}"
+        try:
+            match = _match_one_position(
+                llm=llm,
+                scope_item=scope_item,
+                requirements=requirements,
+                assets_index=assets_index,
+                top_k=top_k,
+                user_instruction=instruction,
+            )
+            return index, match, None
+        except Exception as exc:
+            trace_note(
+                "match_position_failed",
+                f"Ошибка подбора эталона для «{name}»: {exc}",
+                meta={"scope_name": name, "index": index},
+            )
+            fallback = _failed_position_match(
+                scope_item,
+                requirements,
+                explanation=f"Не удалось подобрать эталон: {exc}",
+            )
+            return index, fallback, f"Match «{name}»: {exc}"
 
     matches: list[ScopePositionMatch | None] = [None] * len(scope_items)
+    warnings: list[str] = []
     done = 0
     done_lock = threading.Lock()
 
-    def _on_done(index: int, match: ScopePositionMatch) -> None:
+    def _on_done(index: int, match: ScopePositionMatch, warning: str | None) -> None:
         nonlocal done
         matches[index] = match
+        if warning:
+            warnings.append(warning)
         with done_lock:
             done += 1
             current = done
@@ -284,13 +331,28 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
 
     if workers <= 1 or len(scope_items) == 1:
         for index in range(len(scope_items)):
-            idx, match = _one(index)
-            _on_done(idx, match)
+            idx, match, warning = _one(index)
+            _on_done(idx, match, warning)
     else:
         with ThreadPoolExecutor(max_workers=min(workers, len(scope_items))) as pool:
             futures = {pool.submit(_one, index): index for index in range(len(scope_items))}
             for future in as_completed(futures):
-                idx, match = future.result()
-                _on_done(idx, match)
+                try:
+                    idx, match, warning = future.result()
+                except Exception as exc:
+                    idx = futures[future]
+                    scope_item = scope_items[idx]
+                    requirements = reqs_by_item[idx] if idx < len(reqs_by_item) else []
+                    name = str(scope_item.get("name") or "").strip() or f"позиция {idx + 1}"
+                    match = _failed_position_match(
+                        scope_item,
+                        requirements,
+                        explanation=f"Не удалось подобрать эталон: {exc}",
+                    )
+                    warning = f"Match «{name}»: {exc}"
+                _on_done(idx, match, warning)
 
-    return {"position_matches": [item for item in matches if item is not None]}
+    return {
+        "position_matches": [item for item in matches if item is not None],
+        "warnings": warnings,
+    }
