@@ -1,6 +1,6 @@
 import json
 
-from ai_tender.providers import parse_llm_json, try_parse_llm_json
+from ai_tender.providers import complete_llm_json, parse_llm_json, try_parse_llm_json
 
 
 def test_parse_llm_json_strips_fence() -> None:
@@ -29,3 +29,50 @@ def test_parse_llm_json_still_raises_on_unfixable() -> None:
     except json.JSONDecodeError:
         return
     raise AssertionError("expected JSONDecodeError")
+
+
+class _Resp:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __str__(self) -> str:
+        return self.text
+
+
+def test_complete_llm_json_ok_first_try() -> None:
+    class LLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, prompt: str) -> _Resp:
+            self.calls += 1
+            return _Resp('{"found": true, "requirements": []}')
+
+    llm = LLM()
+    data, n = complete_llm_json(llm, "prompt", trace_name=None)  # type: ignore[arg-type]
+    assert data == {"found": True, "requirements": []}
+    assert n == 1
+    assert llm.calls == 1
+
+
+def test_complete_llm_json_repairs_invalid() -> None:
+    class LLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, prompt: str) -> _Resp:
+            self.calls += 1
+            if self.calls == 1:
+                return _Resp("<<<not-json>>>")
+            return _Resp('{"found": false, "requirements": []}')
+
+    llm = LLM()
+    data, n = complete_llm_json(
+        llm,  # type: ignore[arg-type]
+        "prompt",
+        structure_hint="той же структуры (поля found и requirements)",
+        trace_name=None,
+    )
+    assert data == {"found": False, "requirements": []}
+    assert n == 2
+    assert llm.calls == 2

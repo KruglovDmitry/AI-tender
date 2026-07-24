@@ -69,6 +69,47 @@ def try_parse_llm_json(content: str) -> dict[str, Any] | None:
         return None
 
 
+def complete_llm_json(
+    llm: LLM,
+    prompt: str,
+    *,
+    structure_hint: str = "той же структуры",
+    trace_name: str | None = None,
+    repair: bool = True,
+) -> tuple[dict[str, Any] | None, int]:
+    """
+    LLM complete → разбор JSON; при битом ответе — один repair-запрос.
+
+    Возвращает (data|None, число complete-вызовов).
+    """
+    from .services.logging_service import trace_llm
+
+    response = llm.complete(prompt)
+    raw = str(response)
+    if trace_name:
+        trace_llm(trace_name, prompt=prompt, response=raw, meta={"phase": "extract"})
+    data = try_parse_llm_json(raw)
+    if data is not None or not repair:
+        return data, 1
+
+    repair_prompt = (
+        "Предыдущий ответ был НЕВАЛИДНЫМ JSON. "
+        f"Верни ТОЛЬКО исправленный валидный JSON-объект {structure_hint}. "
+        "Без markdown, без комментариев. Экранируй кавычки в строках.\n\n"
+        f"ИСХОДНЫЙ ОТВЕТ:\n{raw[:12000]}"
+    )
+    repaired = llm.complete(repair_prompt)
+    repaired_raw = str(repaired)
+    if trace_name:
+        trace_llm(
+            f"{trace_name}_repair",
+            prompt=repair_prompt,
+            response=repaired_raw,
+            meta={"phase": "repair"},
+        )
+    return try_parse_llm_json(repaired_raw), 2
+
+
 def build_llm(settings: Settings) -> LLM:
     provider = settings.llm_provider.lower().strip()
     if provider == "openai":

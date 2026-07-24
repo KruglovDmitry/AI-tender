@@ -1,13 +1,13 @@
 import json
 from typing import Any
 
-from llama_index.core import Document
-
+from ai_tender.models import ExtractedRequirement
+from ai_tender.nodes.common import docs_for_label
 from ai_tender.nodes.requirements import (
-    _dedupe_equivalent_files,
-    _order_requirement_files,
-    extract_requirements_per_scope_items,
+    extract_requirements_from_file,
+    order_requirement_files,
 )
+from llama_index.core import Document
 
 
 class CountingLLM:
@@ -60,19 +60,12 @@ class _Resp:
         return self.text
 
 
-def _docs(*pairs: tuple[str, str]) -> list[Document]:
-    return [
-        Document(text=text, metadata={"file_path": label, "file_name": label})
-        for label, text in pairs
-    ]
-
-
-def test_order_requirement_files_uses_doc_selection_not_length() -> None:
-    files = [
-        ("title.pdf", "short", None),
-        ("ТЗ ФЗ-522 детальное.docx", "x" * 50, None),
-        ("Приложение №6 Регламент.docx", "y" * 5000, None),
-        ("Извещение.docx", "z" * 2000, None),
+def test_order_requirement_files_specs_before_title() -> None:
+    labels = [
+        "title.pdf",
+        "ТЗ ФЗ-522 детальное.docx",
+        "Приложение №6 Регламент.docx",
+        "Извещение.docx",
     ]
     doc_selection = {
         "files": [
@@ -92,13 +85,8 @@ def test_order_requirement_files_uses_doc_selection_not_length() -> None:
             {"path": "Извещение.docx", "scope_level": 1, "role": "notice", "priority": 2},
         ]
     }
-    ordered = _order_requirement_files(
-        files,
-        file_order=[f[0] for f in files],
-        prefer_labels=["title.pdf", "ТЗ ФЗ-522 детальное.docx"],
-        doc_selection=doc_selection,
-    )
-    assert [item[0] for item in ordered] == [
+    ordered = order_requirement_files(labels, doc_selection=doc_selection)
+    assert ordered == [
         "ТЗ ФЗ-522 детальное.docx",
         "title.pdf",
         "Приложение №6 Регламент.docx",
@@ -106,66 +94,59 @@ def test_order_requirement_files_uses_doc_selection_not_length() -> None:
     ]
 
 
-def test_dedupe_docx_preferred_over_pdf_same_stem() -> None:
-    files = [
-        ("ТЗ ФЗ-522_6-20кВ.pdf", "same body text " * 40, None),
-        ("ТЗ ФЗ-522_6-20кВ.docx", "same body text " * 40, None),
-    ]
-    kept, skipped = _dedupe_equivalent_files(files)
-    assert len(kept) == 1
-    assert kept[0][0].endswith(".docx")
-    assert skipped
+def test_order_prefers_docx_over_pdf_same_stem() -> None:
+    ordered = order_requirement_files(
+        ["ТЗ ФЗ-522_6-20кВ.pdf", "ТЗ ФЗ-522_6-20кВ.docx"]
+    )
+    assert ordered == ["ТЗ ФЗ-522_6-20кВ.docx"]
 
 
 def test_extract_one_call_per_position_parallel() -> None:
     llm = CountingLLM()
     scope_items = [{"name": f"позиция {i}", "qty": i + 1, "unit": "шт."} for i in range(4)]
-    docs = _docs(("tz.docx", "текст ТЗ с требованиями " * 50))
-
-    buckets, stats = extract_requirements_per_scope_items(
-        docs,
+    buckets, stats = extract_requirements_from_file(
+        label="tz.docx",
+        text="текст ТЗ с требованиями " * 50,
         scope_items=scope_items,
         llm=llm,  # type: ignore[arg-type]
         max_per_item=1,
         max_chars_per_doc=5000,
-        max_files=2,
         parallelism=4,
     )
-
     assert llm.calls == 4
     assert stats["llm_calls"] == 4
     assert stats["parallelism"] == 4
     assert all(len(bucket) == 1 for bucket in buckets)
 
 
-def test_extract_tries_next_file_when_empty() -> None:
+def test_extract_second_file_fills_empty_buckets() -> None:
+    """Как два прохода графа: пустой файл → следующий."""
     llm = CountingLLM(empty_labels={"tz.docx"})
     scope_items = [{"name": "ПКУ", "qty": 1, "unit": "шт."}]
-    docs = _docs(
-        ("title.pdf", "титул с общими требованиями " * 20),
-        ("tz.docx", "файл без нужных требований " * 40),
-    )
-    doc_selection = {
-        "files": [
-            {"path": "title.pdf", "scope_level": 1, "role": "tz_main", "priority": 2},
-            {"path": "tz.docx", "scope_level": 2, "role": "specs", "priority": 1},
-        ]
-    }
 
-    buckets, stats = extract_requirements_per_scope_items(
-        docs,
+    buckets, stats1 = extract_requirements_from_file(
+        label="tz.docx",
+        text="файл без нужных требований " * 40,
         scope_items=scope_items,
         llm=llm,  # type: ignore[arg-type]
         max_per_item=1,
         max_chars_per_doc=5000,
-        doc_selection=doc_selection,
-        max_files=2,
     )
+    assert buckets == [[]]
+    assert stats1["llm_calls"] == 1
 
-    assert llm.calls == 2
-    assert stats["files_tried_by_item"][0] == ["tz.docx", "title.pdf"]
-    assert stats["source_by_item"] == ["title.pdf"]
+    buckets, stats2 = extract_requirements_from_file(
+        label="title.pdf",
+        text="титул с общими требованиями " * 20,
+        scope_items=scope_items,
+        llm=llm,  # type: ignore[arg-type]
+        max_per_item=1,
+        max_chars_per_doc=5000,
+        existing_buckets=buckets,
+    )
+    assert stats2["source_by_item"] == ["title.pdf"]
     assert len(buckets[0]) == 1
+    assert llm.calls == 2
 
 
 def test_extract_retries_when_sibling_found() -> None:
@@ -175,7 +156,6 @@ def test_extract_retries_when_sibling_found() -> None:
 
         def complete(self, prompt: str) -> Any:
             self.calls += 1
-            # first position always ok; second empty unless retry
             if "ПОЗИЦИЯ: а" in prompt or "ПОЗИЦИЯ: а —" in prompt:
                 return _Resp(
                     json.dumps(
@@ -215,38 +195,56 @@ def test_extract_retries_when_sibling_found() -> None:
             return _Resp(json.dumps({"found": False, "requirements": []}, ensure_ascii=False))
 
     llm = FlakyLLM()
-    buckets, stats = extract_requirements_per_scope_items(
-        _docs(("tz.docx", "текст " * 40)),
+    buckets, stats = extract_requirements_from_file(
+        label="tz.docx",
+        text="текст " * 40,
         scope_items=[{"name": "а"}, {"name": "б"}],
         llm=llm,  # type: ignore[arg-type]
         max_per_item=1,
         max_chars_per_doc=5000,
-        max_files=1,
         retry_if_sibling_found=True,
     )
     assert stats["retries"] == 1
-    assert llm.calls == 3  # a + b empty + b retry
+    assert llm.calls == 3
     assert [len(b) for b in buckets] == [1, 1]
 
 
-def test_extract_skips_duplicate_pdf_when_docx_present() -> None:
-    llm = CountingLLM()
-    scope_items = [{"name": "ПКУ"}]
-    body = "одинаковый текст требований ПКУ " * 30
-    docs = _docs(
-        ("ТЗ ФЗ-522.pdf", body),
-        ("ТЗ ФЗ-522.docx", body),
-    )
-
-    _buckets, stats = extract_requirements_per_scope_items(
-        docs,
+def test_extract_no_retry_when_only_previous_file_filled() -> None:
+    """Retry только если сосед нашёлся в ТЕКУЩЕМ файле."""
+    llm = CountingLLM(empty_labels={"title.pdf"})
+    scope_items = [{"name": "а"}, {"name": "б"}]
+    existing = [
+        [
+            ExtractedRequirement(
+                text="from prev",
+                quote="from prev",
+                file="tz.docx",
+                location="документ",
+            )
+        ],
+        [],
+    ]
+    buckets, stats = extract_requirements_from_file(
+        label="title.pdf",
+        text="титул " * 20,
         scope_items=scope_items,
         llm=llm,  # type: ignore[arg-type]
         max_per_item=1,
         max_chars_per_doc=5000,
-        max_files=3,
+        existing_buckets=existing,
+        retry_if_sibling_found=True,
     )
-
-    assert stats["files_after_dedupe"] == 1
+    assert stats["retries"] == 0
     assert llm.calls == 1
-    assert stats["source_by_item"][0].endswith(".docx")
+    assert len(buckets[0]) == 1
+    assert buckets[1] == []
+
+
+def test_docs_for_label_prefers_exact_path() -> None:
+    docs = [
+        Document(text="wrong", metadata={"file_path": "other/tz.docx"}),
+        Document(text="right", metadata={"file_path": "folder/tz.docx"}),
+    ]
+    matched = docs_for_label(docs, "folder/tz.docx")
+    assert len(matched) == 1
+    assert matched[0].text == "right"

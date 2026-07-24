@@ -11,6 +11,7 @@ from llama_index.core.llms import LLM
 from ..services.text_service import merge_documents_by_file, numbered_excerpt
 from ..models import PipelineState, Settings
 from ..providers import parse_llm_json
+from .common import parse_optional_float
 
 
 SCOPE_SCHEMA_HINT = """
@@ -43,13 +44,6 @@ SCOPE_SCHEMA_HINT = """
 - Если перечень найден (даже 1 позиция с qty) — needs_more_docs=false.
 - quote — дословный фрагмент. Не пересказывай.
 """.strip()
-
-
-def _parse_optional_float(value: Any, default: float) -> float:
-    try:
-        return float(value if value is not None else default)
-    except (TypeError, ValueError):
-        return default
 
 
 def _parse_optional_qty(value: Any) -> float | int | None:
@@ -124,14 +118,14 @@ def extract_procurement_scope_from_documents(
                 "qty": qty,
                 "unit": unit,
                 "confidence": min(
-                    max(_parse_optional_float(item.get("confidence"), 0.5), 0.0),
+                    max(parse_optional_float(item.get("confidence"), 0.5), 0.0),
                     1.0,
                 ),
                 "quote": str(item.get("quote", "")).strip(),
             }
         )
 
-    overall = min(max(_parse_optional_float(data.get("overall_confidence"), 0.5), 0.0), 1.0)
+    overall = min(max(parse_optional_float(data.get("overall_confidence"), 0.5), 0.0), 1.0)
     needs_more = bool(data.get("needs_more_docs", False))
     missing_signals = str(data.get("missing_signals", "")).strip()
 
@@ -155,22 +149,15 @@ def extract_procurement_scope_from_documents(
 
 
 def node_load_next_scope_file(state: PipelineState) -> dict[str, Any]:
-    from .common import load_labels, next_unloaded, progress
+    from .common import load_label_updates, next_unloaded, progress
 
     label = next_unloaded(state)
     if not label:
         return {}
     progress(state, f"Загрузка файла для scope: {Path(label).name}", 0.28)
-    docs, warns = load_labels(state, [label])
-    loaded = list(state.get("loaded_labels") or [])
-    if label not in loaded:
-        loaded.append(label)
-    return {
-        "documents": docs,
-        "loaded_labels": loaded,
-        "scope_files_used": [label],
-        "warnings": warns,
-    }
+    updates: dict[str, Any] = {"scope_files_used": [label]}
+    updates.update(load_label_updates(state, label))
+    return updates
 
 
 def node_extract_scope(state: PipelineState) -> dict[str, Any]:

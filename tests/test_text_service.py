@@ -1,17 +1,12 @@
 from llama_index.core import Document
-from llama_index.core.schema import TextNode
 
 from ai_tender.services.text_service import (
-    attach_anchor,
     dedupe_requirements,
-    locate_quote,
+    make_requirement,
     merge_documents_by_file,
+    numbered_excerpt,
 )
 from ai_tender.models import ExtractedRequirement
-
-
-def _node(text: str) -> TextNode:
-    return TextNode(text=text, metadata={"file_path": "tender.docx", "location": "док"})
 
 
 def test_merge_documents_by_file_joins_pages() -> None:
@@ -26,24 +21,24 @@ def test_merge_documents_by_file_joins_pages() -> None:
     assert by_label["b.docx"] == "другой"
 
 
-def test_locate_quote_returns_line_numbers() -> None:
-    source = "шапка\nКласс точности не хуже 1.0\nхвост"
-    anchor = locate_quote(source, "Класс точности не хуже 1.0")
-    assert anchor is not None
-    assert anchor.line_start == 2
+def test_numbered_excerpt_keeps_line_prefixes() -> None:
+    text = numbered_excerpt("первая\nвторая", max_chars=1000)
+    assert text.startswith("1|первая")
+    assert "2|вторая" in text
 
 
-def test_attach_anchor_remembers_lines() -> None:
-    node = _node("стр1\nНоминальное напряжение 230 В\nстр3")
-    req = attach_anchor(
+def test_make_requirement_strips_line_prefix_from_quote() -> None:
+    req = make_requirement(
         text="Напряжение 230 В",
-        quote="Номинальное напряжение 230 В",
-        source_node=node,
+        quote="12|Номинальное напряжение 230 В",
+        file="tender.docx",
         priority=3,
         confidence=0.9,
     )
-    assert req.line_start == 2
     assert req.quote == "Номинальное напряжение 230 В"
+    assert req.file == "tender.docx"
+    assert req.location == "документ"
+    assert req.line_start is None
 
 
 def test_dedupe_requirements() -> None:
