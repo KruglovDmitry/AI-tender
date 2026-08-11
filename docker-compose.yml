@@ -14,8 +14,9 @@ services:
       - ./sources:/data/tender:ro
       - ./assets:/data/assets:ro
       - ./data:/app/data
-      - hf_cache:/root/.cache/huggingface
+      # HF + LlamaIndex кладут bge-m3 в разные пути — монтируем весь .cache
+      - model_cache:/root/.cache
     restart: unless-stopped
 
 volumes:
-  hf_cache:
+  model_cache:

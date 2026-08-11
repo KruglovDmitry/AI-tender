@@ -14,7 +14,7 @@ def node_build_assets_index(state: PipelineState) -> dict[str, Any]:
     settings: Settings = state["settings"]
     progress(
         state,
-        "Индекс эталонов: чтение PDF и эмбеддинги (после смены файлов — полная пересборка)",
+        "Индекс эталонов: загрузка embedding-модели и проверка кэша…",
         0.6,
     )
     assets_index, asset_nodes, asset_warnings, index_reused = load_or_build_assets_index(
