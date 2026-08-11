@@ -12,7 +12,15 @@ from ai_tender.models import (
     PositionMatchStatus,
     get_settings,
 )
+from ai_tender.services.index_service import indexed_file_paths, load_or_build_assets_index
 from ai_tender.services.ocr_service import ocr_status
+from ai_tender.services.report_export import report_to_json_bytes, report_to_markdown
+from ai_tender.services.upload_service import (
+    cleanup_old_uploads,
+    new_run_dir,
+    prepare_upload_dir,
+    replace_shared_assets,
+)
 from ai_tender.graph import analyze, warm_up_graph
 
 # Компиляция структуры графа при старте приложения (один раз).
@@ -283,6 +291,26 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
     if trace_dir:
         st.caption(f"Логи LLM/retrieval: `{trace_dir}`")
 
+    md_bytes = report_to_markdown(report).encode("utf-8")
+    json_bytes = report_to_json_bytes(report)
+    col_md, col_json = st.columns(2)
+    with col_md:
+        st.download_button(
+            "Скачать отчёт (.md)",
+            data=md_bytes,
+            file_name="ai-tender-report.md",
+            mime="text/markdown",
+            width="stretch",
+        )
+    with col_json:
+        st.download_button(
+            "Скачать отчёт (.json)",
+            data=json_bytes,
+            file_name="ai-tender-report.json",
+            mime="application/json",
+            width="stretch",
+        )
+
     if report.verdict:
         st.subheader("Итоговый вывод")
         st.info(report.verdict.replace("\n", "  \n"))
@@ -419,6 +447,15 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
             st.write("\n".join(f"- {warning}" for warning in report.warnings))
 
 
+default_tender = default_tender_path()
+default_assets = default_assets_path()
+if "tender_folder" not in st.session_state:
+    st.session_state.tender_folder = default_tender
+if "assets_folder" not in st.session_state:
+    st.session_state.assets_folder = default_assets
+
+cleanup_old_uploads()
+
 settings = get_settings()
 with st.sidebar:
     st.header("Настройки")
@@ -441,6 +478,67 @@ with st.sidebar:
             type="password",
         )
 
+    _assets_update_message = st.session_state.pop("assets_update_message", None)
+    if _assets_update_message:
+        st.success(_assets_update_message)
+
+    with st.expander("Эталоны", expanded=False):
+        st.caption(
+            "Эталоны — справочные ТС продукции на сервере. "
+            "По ним сравнивается тендер. Обновление заменяет общий комплект "
+            "для стенда и сразу строит индекс."
+        )
+        info = st.session_state.get("assets_index_info")
+        if info and info.get("files"):
+            st.caption(f"В индексе: {len(info['files'])} файл(ов)")
+        assets_uploads = st.file_uploader(
+            "Новый пакет (файлы или ZIP/RAR)",
+            accept_multiple_files=True,
+            key="assets_uploader",
+        )
+        if st.button(
+            "Обновить эталоны",
+            key="update_assets_btn",
+            type="secondary",
+            width="stretch",
+            disabled=not assets_uploads,
+        ):
+            try:
+                with st.spinner("Сохранение эталонов..."):
+                    assets_root = Path(st.session_state.assets_folder).expanduser()
+                    _, upload_warnings = replace_shared_assets(
+                        list(assets_uploads), assets_root
+                    )
+                with st.spinner(
+                    "Построение индекса эталонов (может занять несколько минут)..."
+                ):
+                    _index, nodes, index_warnings, reused = load_or_build_assets_index(
+                        assets_root.resolve(),
+                        cache_dir=settings.cache_dir,
+                        embedding_model=settings.embedding_model,
+                        chunk_size=settings.chunk_size,
+                        chunk_overlap=settings.chunk_overlap,
+                        device=settings.embedding_device,
+                        ocr_enabled=settings.ocr_enabled,
+                        ocr_languages=settings.ocr_languages,
+                    )
+                files = indexed_file_paths(nodes)
+                st.session_state["assets_index_info"] = {
+                    "files": files,
+                    "reused": reused,
+                    "warnings": upload_warnings + index_warnings,
+                }
+                st.session_state["assets_update_message"] = (
+                    f"Эталоны обновлены. Индекс: {len(files)} файлов"
+                    + (" (кэш)" if reused else " (заново)")
+                    + "."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.exception(exc)
+        for warning in (info or {}).get("warnings") or []:
+            st.warning(warning)
+
     ocr_enabled = st.checkbox(
         "OCR для сканов PDF",
         value=settings.ocr_enabled,
@@ -457,38 +555,47 @@ with st.sidebar:
         help="Верхний лимит извлечённых требований на каждую позицию перечня. Минимум не ограничен.",
     )
 
-default_tender = default_tender_path()
-default_assets = default_assets_path()
-if "tender_folder" not in st.session_state:
-    st.session_state.tender_folder = default_tender
-if "assets_folder" not in st.session_state:
-    st.session_state.assets_folder = default_assets
+tender_source = st.radio(
+    "Источник документов тендера",
+    options=["upload", "folder"],
+    format_func=lambda value: (
+        "Загрузить файлы" if value == "upload" else "Папка на сервере"
+    ),
+    horizontal=True,
+    key="tender_source",
+)
 
-if is_running_in_docker():
-    st.info(
-        "Режим Docker. Положите документы в папки `sources` и `assets` рядом с проектом "
-        "или укажите путь внутри контейнера (`/data/tender`, `/data/assets`)."
+tender_uploads = None
+tender_input = st.session_state.tender_folder
+if tender_source == "upload":
+    tender_uploads = st.file_uploader(
+        "Документы тендера (файлы или ZIP/RAR)",
+        accept_multiple_files=True,
+        key="tender_uploader",
+    )
+    if tender_uploads:
+        st.caption(f"Выбрано файлов: {len(tender_uploads)}")
+else:
+    if is_running_in_docker():
+        st.info(
+            "Docker: папки с хоста смонтированы как "
+            "`sources` → `/data/tender`, `assets` → `/data/assets`."
+        )
+    tender_input = folder_path_input(
+        "Папка с документами тендера",
+        state_key="tender_folder",
+        pick_key="pick_tender_folder",
     )
 
-tender_input = folder_path_input(
-    "Папка с документами тендера",
-    state_key="tender_folder",
-    pick_key="pick_tender_folder",
-)
-assets_input = folder_path_input(
-    "Папка с эталонными документами",
-    state_key="assets_folder",
-    pick_key="pick_assets_folder",
-)
-
 if st.button("Начать сравнение", type="primary", width="stretch"):
-    tender_path = Path(tender_input).expanduser()
-    assets_path = Path(assets_input).expanduser()
+    assets_path = Path(st.session_state.assets_folder).expanduser()
 
     if not api_key:
         st.error("Укажите API key для выбранного LLM-провайдера.")
-    elif not tender_path.is_dir() or not assets_path.is_dir():
-        st.error("Один из указанных путей не существует или не является папкой.")
+    elif not assets_path.is_dir():
+        st.error("Каталог эталонов не существует.")
+    elif tender_source == "upload" and not tender_uploads:
+        st.error("Загрузите файлы тендера или выберите папку на сервере.")
     else:
         if llm_provider == "deepseek":
             os.environ["DEEPSEEK_API_KEY"] = api_key
@@ -512,12 +619,27 @@ if st.button("Начать сравнение", type="primary", width="stretch")
         )
 
         try:
+            if tender_source == "upload":
+                update("Сохранение загруженного тендера...", 0.02)
+                run_dir = new_run_dir("tender")
+                tender_path, upload_warnings = prepare_upload_dir(
+                    list(tender_uploads),
+                    run_dir / "tender",
+                )
+            else:
+                tender_path = Path(tender_input).expanduser()
+                upload_warnings = []
+                if not tender_path.is_dir():
+                    raise ValueError("Папка тендера не существует.")
+
             report = analyze(
                 tender_path,
                 assets_path,
                 settings=runtime_settings,
                 progress=update,
             )
+            if upload_warnings:
+                report.warnings = list(report.warnings or []) + upload_warnings
         except Exception as exc:
             progress_bar.empty()
             status.empty()

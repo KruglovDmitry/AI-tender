@@ -8,12 +8,17 @@ services:
       - .env
     environment:
       RUNNING_IN_DOCKER: "1"
+      PYTHONPATH: /app/src
       TESSDATA_PREFIX: /usr/share/tesseract-ocr/5/tessdata
       TESSERACT_CMD: /usr/bin/tesseract
     volumes:
       - ./sources:/data/tender:ro
-      - ./assets:/data/assets:ro
+      # rw: «Обновить эталоны» пишет в этот каталог
+      - ./assets:/data/assets
       - ./data:/app/data
+      # UI/код без пересборки образа
+      - ./app.py:/app/app.py:ro
+      - ./src:/app/src:ro
       # HF + LlamaIndex кладут bge-m3 в разные пути — монтируем весь .cache
       - model_cache:/root/.cache
     restart: unless-stopped
