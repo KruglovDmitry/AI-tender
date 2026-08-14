@@ -19,6 +19,12 @@ def test_parse_llm_json_control_chars() -> None:
     assert "line1" in data["text"]
 
 
+def test_parse_llm_json_missing_comma_between_objects() -> None:
+    data = parse_llm_json('{"items": [{"x": 1}\n{"x": 2}]}')
+    assert data["items"][0]["x"] == 1
+    assert data["items"][1]["x"] == 2
+
+
 def test_try_parse_llm_json_returns_none_on_garbage() -> None:
     assert try_parse_llm_json("not json at all {") is None
 

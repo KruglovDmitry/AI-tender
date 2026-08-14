@@ -38,6 +38,8 @@ def _repair_json_text(text: str) -> str:
     )
     # Управляющие символы внутри строк ломают json.loads.
     repaired = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", repaired)
+    # Пропущенные запятые между элементами: }{  ]{  }[  ][
+    repaired = re.sub(r"([}\]])(\s*)([{\[])", r"\1,\2\3", repaired)
     # Висячие запятые перед } или ]
     repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
     return repaired

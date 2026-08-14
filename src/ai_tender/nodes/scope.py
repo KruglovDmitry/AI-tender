@@ -10,7 +10,8 @@ from llama_index.core.llms import LLM
 
 from ..services.text_service import merge_documents_by_file, numbered_excerpt
 from ..models import PipelineState, Settings
-from ..providers import parse_llm_json
+from ..providers import complete_llm_json
+from ..services.logging_service import trace_note
 from .common import parse_optional_float
 
 
@@ -100,8 +101,24 @@ def extract_procurement_scope_from_documents(
         f"{SCOPE_SCHEMA_HINT}\n\n"
         f"ДОКУМЕНТЫ ТЕНДЕРА:\n{joined_docs}"
     )
-    response = llm.complete(prompt)
-    data = parse_llm_json(str(response))
+    data, _n_calls = complete_llm_json(
+        llm,
+        prompt,
+        structure_hint="той же структуры (scope_summary, scope_items, overall_confidence, …)",
+        trace_name="extract_scope",
+    )
+    if data is None:
+        trace_note(
+            "extract_scope",
+            "Не удалось разобрать JSON ответа LLM для scope",
+            meta={"parse_failed": True},
+        )
+        return [], {
+            "scope_summary": "",
+            "overall_confidence": 0.0,
+            "needs_more_docs": True,
+            "missing_signals": "LLM вернул невалидный JSON при извлечении предмета закупки",
+        }
 
     scope_items: list[dict[str, Any]] = []
     for item in data.get("scope_items", [])[:scope_max_items]:

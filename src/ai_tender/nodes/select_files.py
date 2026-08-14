@@ -8,7 +8,7 @@ from typing import Any
 
 from llama_index.core.llms import LLM
 
-from ..providers import parse_llm_json
+from ..providers import complete_llm_json
 from ..services.loader_service import READABLE_SUFFIXES, TenderInventory, inventory_tender_folder
 from ..models import PipelineState, Settings
 
@@ -249,8 +249,14 @@ def select_tender_files_by_llm(
         f"СТРУКТУРА ПАПОК:\n{tree_text}\n\n"
         f"СПИСОК ФАЙЛОВ:\n{catalog_list}"
     )
-    response = llm.complete(prompt)
-    data = parse_llm_json(str(response))
+    data, _n_calls = complete_llm_json(
+        llm,
+        prompt,
+        structure_hint="той же структуры (files, skip)",
+        trace_name="select_files",
+    )
+    if data is None:
+        raise ValueError("LLM вернул невалидный JSON при выборе файлов")
 
     files_out: list[dict[str, Any]] = []
     seen: set[str] = set()
