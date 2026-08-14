@@ -35,10 +35,12 @@ def find_unrar_tool() -> Path | None:
     if env and Path(env).is_file():
         return Path(env)
 
+    home_local = Path.home() / ".local" / "bin" / "unrar"
     for candidate in (
         shutil.which("unrar"),
         shutil.which("unrar-free"),
         shutil.which("UnRAR"),
+        str(home_local) if home_local.is_file() else None,
         "/usr/bin/unrar",
         "/usr/bin/unrar-free",
         r"C:\Program Files\WinRAR\UnRAR.exe",
@@ -47,6 +49,24 @@ def find_unrar_tool() -> Path | None:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
     return None
+
+
+def _nonempty_files(folder: Path) -> list[Path]:
+    return [
+        path
+        for path in folder.rglob("*")
+        if path.is_file() and path.stat().st_size > 0
+    ]
+
+
+def _assert_extracted_payload(dest: Path, archive: Path) -> None:
+    """7-Zip на RAR5 часто создаёт пустые файлы и всё равно пишет exit≠0/0."""
+    if _nonempty_files(dest):
+        return
+    raise RuntimeError(
+        f"После распаковки {archive.name} нет файлов с данными "
+        "(часто системный 7z не умеет метод сжатия RAR5 — нужен UnRAR)."
+    )
 
 
 def find_7z_tool() -> Path | None:
@@ -94,6 +114,21 @@ def unpack_zip(archive: Path, dest: Path) -> None:
                 output.write(source.read())
 
 
+def _unpack_rar_with_unrar(archive: Path, dest: Path, unrar: Path) -> None:
+    """Прямой вызов UnRAR надёжнее rarfile на RAR5."""
+    dest.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [str(unrar), "x", "-o+", "-y", str(archive), str(dest) + os.sep],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or "неизвестная ошибка").strip()
+        raise RuntimeError(details)
+    _assert_extracted_payload(dest, archive)
+
+
 def _unpack_rar_with_7z(archive: Path, dest: Path, seven_zip: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
@@ -102,29 +137,17 @@ def _unpack_rar_with_7z(archive: Path, dest: Path, seven_zip: Path) -> None:
         text=True,
         check=False,
     )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout or "неизвестная ошибка").strip()
+    combined = f"{result.stderr or ''}\n{result.stdout or ''}"
+    if result.returncode != 0 or "Unsupported Method" in combined:
+        details = combined.strip() or "неизвестная ошибка"
         raise RuntimeError(details)
+    _assert_extracted_payload(dest, archive)
 
 
 def unpack_rar(archive: Path, dest: Path) -> None:
-    try:
-        import rarfile
-    except ImportError as exc:
-        raise RuntimeError("Для RAR установите пакет rarfile") from exc
-
-    tool = configure_rarfile()
+    tool = find_unrar_tool()
     if tool is not None:
-        with rarfile.RarFile(archive) as handle:
-            for info in handle.infolist():
-                if info.is_dir():
-                    continue
-                target = _safe_extract_member(dest, info.filename)
-                if target is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with handle.open(info) as source, target.open("wb") as output:
-                    output.write(source.read())
+        _unpack_rar_with_unrar(archive, dest, tool)
         return
 
     seven_zip = find_7z_tool()
@@ -133,7 +156,7 @@ def unpack_rar(archive: Path, dest: Path) -> None:
         return
 
     raise RuntimeError(
-        "Не найден UnRAR или 7-Zip. Установите WinRAR/7-Zip или задайте UNRAR_TOOL "
+        "Не найден UnRAR или 7-Zip. Установите WinRAR/UnRAR/7-Zip или задайте UNRAR_TOOL "
         "(например C:\\Program Files\\WinRAR\\UnRAR.exe)."
     )
 

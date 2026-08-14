@@ -136,6 +136,33 @@ def test_zip_slip_is_rejected(tmp_path: Path) -> None:
         assert not (tmp_path / "escape.txt").exists()
 
 
+def test_unpack_rar_with_7z_rejects_empty_payload(tmp_path: Path, monkeypatch) -> None:
+    from ai_tender.services import archive_service as mod
+
+    archive = tmp_path / "pack.rar"
+    archive.write_bytes(b"rar-stub")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    empty = dest / "broken.docx"
+    empty.write_bytes(b"")
+
+    def fake_run(*args, **kwargs):
+        class Result:
+            returncode = 0
+            stdout = "Everything is Ok"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    try:
+        mod._unpack_rar_with_7z(archive, dest, Path("/usr/bin/7z"))
+    except RuntimeError as exc:
+        assert "нет файлов с данными" in str(exc)
+    else:
+        raise AssertionError("Ожидалась ошибка на пустой распаковке")
+
+
 def test_expand_archives_preserves_nested_paths(tmp_path: Path) -> None:
     warnings: list[str] = []
     temp_dirs = []

@@ -1,0 +1,12 @@
+{
+	auto_https off
+}
+
+:80, :8080 {
+	encode gzip
+	log {
+		output file /home/dima/projects/AI-tender/data/caddy-access.log
+		format console
+	}
+	reverse_proxy 127.0.0.1:8501
+}

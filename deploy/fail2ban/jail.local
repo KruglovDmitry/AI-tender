@@ -1,0 +1,14 @@
+[DEFAULT]
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+backend  = systemd
+ignoreip = 127.0.0.1/8 ::1 192.168.0.0/24
+
+[sshd]
+enabled = true
+port    = ssh
+filter  = sshd
+backend = systemd
+maxretry = 5
+bantime  = 1h

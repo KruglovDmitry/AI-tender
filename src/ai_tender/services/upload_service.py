@@ -55,12 +55,30 @@ def expand_top_level_archives(folder: Path, warnings: list[str]) -> None:
         unpack_dest = folder / archive.stem
         if unpack_dest.exists():
             unpack_dest = folder / f"{archive.stem}_unpacked"
+        if unpack_dest.exists():
+            shutil.rmtree(unpack_dest)
         unpack_dest.mkdir(parents=True, exist_ok=True)
         try:
             unpack_archive(archive, unpack_dest)
         except Exception as exc:
+            shutil.rmtree(unpack_dest, ignore_errors=True)
             warnings.append(f"Не удалось распаковать {archive.name}: {exc}")
             continue
+        # Одна корневая папка с тем же именем, что и архив (2.rar → 2/…) —
+        # поднимаем содержимое, чтобы пути не были stem/stem/...
+        children = list(unpack_dest.iterdir())
+        if (
+            len(children) == 1
+            and children[0].is_dir()
+            and children[0].name == archive.stem
+        ):
+            nested = children[0]
+            for child in nested.iterdir():
+                target = unpack_dest / child.name
+                if target.exists():
+                    target = unpack_dest / f"{child.name}_from_archive"
+                shutil.move(str(child), str(target))
+            nested.rmdir()
         archive.unlink(missing_ok=True)
 
 

@@ -161,6 +161,15 @@ def is_running_in_docker() -> bool:
     return os.environ.get("RUNNING_IN_DOCKER") == "1" or Path("/.dockerenv").exists()
 
 
+def folder_picker_available() -> bool:
+    """GUI-выбор папки доступен только при локальном дисплее (не headless/стенд)."""
+    if is_running_in_docker():
+        return False
+    if sys.platform == "win32":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def default_tender_path() -> str:
     if is_running_in_docker():
         for candidate in (Path("/data/tender/1"), Path("/data/tender")):
@@ -178,6 +187,11 @@ def default_assets_path() -> str:
 
 def pick_folder_dialog(initial: str | None = None) -> str | None:
     """Диалог выбора папки в отдельном процессе (совместимо со Streamlit)."""
+    if not folder_picker_available():
+        raise RuntimeError(
+            "На стенде нет GUI-дисплея. Введите путь к папке на сервере вручную."
+        )
+
     initialdir = ""
     if initial:
         initial_path = Path(initial).expanduser()
@@ -242,11 +256,17 @@ def _pick_folder_callback(state_key: str, error_key: str) -> None:
 
 
 def folder_path_input(label: str, state_key: str, pick_key: str) -> str:
-    if is_running_in_docker():
-        st.caption(
-            "Docker: папки с хоста смонтированы как "
-            "`sources` → `/data/tender`, `assets` → `/data/assets`."
-        )
+    if not folder_picker_available():
+        if is_running_in_docker():
+            st.caption(
+                "Docker: папки с хоста смонтированы как "
+                "`sources` → `/data/tender`, `assets` → `/data/assets`."
+            )
+        else:
+            st.caption(
+                "Стенд без GUI: укажите путь к папке на сервере вручную "
+                "(например `sources` или абсолютный путь)."
+            )
         return st.text_input(label, key=state_key)
 
     error_key = f"{pick_key}__error"

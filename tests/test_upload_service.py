@@ -38,6 +38,39 @@ def test_prepare_upload_dir_saves_and_unpacks_zip(tmp_path: Path) -> None:
     assert not (dest / "pack.zip").exists()
 
 
+def test_prepare_upload_dir_hoists_single_root_folder(tmp_path: Path) -> None:
+    archive = tmp_path / "2.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("2/docs/a.txt", "hello")
+
+    dest = tmp_path / "tender"
+    prepare_upload_dir([_FakeUpload("2.zip", archive.read_bytes())], dest)
+    assert (dest / "2" / "docs" / "a.txt").is_file()
+    assert not (dest / "2" / "2").exists()
+    assert not (dest / "2.zip").exists()
+
+
+def test_expand_top_level_archives_cleans_failed_dest(tmp_path: Path, monkeypatch) -> None:
+    from ai_tender.services import upload_service as mod
+
+    dest = tmp_path / "tender"
+    dest.mkdir()
+    archive = dest / "bad.rar"
+    archive.write_bytes(b"not-a-rar")
+
+    def boom(path, unpack_dest):
+        unpack_dest.mkdir(parents=True, exist_ok=True)
+        (unpack_dest / "empty.docx").write_bytes(b"")
+        raise RuntimeError("unsupported")
+
+    monkeypatch.setattr(mod, "unpack_archive", boom)
+    warnings: list[str] = []
+    mod.expand_top_level_archives(dest, warnings)
+    assert warnings
+    assert archive.exists()
+    assert not (dest / "bad").exists()
+
+
 def test_replace_shared_assets_clears_previous(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
