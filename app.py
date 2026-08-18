@@ -431,14 +431,14 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
                         st.write(match.explanation)
                     if match.asset_hits:
                         with st.expander(f"Фрагменты эталона ({len(match.asset_hits)})"):
-                            for hit in match.asset_hits[:5]:
+                            for hit in match.asset_hits[:8]:
                                 score = (
                                     f" · score={hit.score:.3f}"
                                     if hit.score is not None
                                     else ""
                                 )
                                 st.caption(f"{Path(hit.file).name} · {hit.location}{score}")
-                                st.write(hit.quote[:400])
+                                st.write(hit.quote[:800])
         else:
             items = scope.get("items") or []
             if items:

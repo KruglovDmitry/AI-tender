@@ -21,7 +21,7 @@ from ..models import (
     Settings,
 )
 from ..providers import complete_llm_json
-from .common import dedupe_evidence_by_file, dedupe_hits_by_file, progress
+from .common import cap_evidence_per_file, cap_hits_per_file, progress
 
 
 POSITION_MATCH_SCHEMA_HINT = """
@@ -43,29 +43,62 @@ POSITION_MATCH_SCHEMA_HINT = """
   (в т.ч. формулировки «тип X или аналог»). Пиши кратко обозначение, без «или аналог».
   Если в тендере только обобщённое описание без конкретной модели — оставь "".
 - product_name: заполняй ТОЛЬКО из цитат эталона (asset_hits); пиши как в цитате.
-  Не копируй required_product в product_name, если этого обозначения нет в asset_hits.
-- matched=true если есть конкретный подходящий вариант основного изделия позиции.
-- status=matched — основное изделие закрыто и ключевые требования подтверждены цитатами
-  либо явно заданы обозначением в названии позиции (см. ниже).
-- status=partial — есть подходящий вариант основного изделия, но покрытие неполное
-  (часть требований или комплектующих не подтверждена цитатами эталона).
-- Если позиция — комплект из нескольких типов изделий, а в эталоне подтверждено
-  только основное изделие (без части комплектующих) — status=partial, matched=true.
-  Не ставь none только из-за отсутствия комплектующих в цитатах.
-- status=none и matched=false — только если нет подходящего основного изделия.
+  Предпочтительно полный артикул/модель из таблицы каталога, а не только имя серии.
+  Пример: «SR33020-6x9», а не «SR33».
+  Серию ставь, только если в цитатах нет конкретной строки модели.
+  Не общие слова категории («ИБП», «зарядное устройство», «светильник») без модели.
+- Выбор строки таблицы: если в цитатах есть несколько моделей одной серии,
+  выбери ту, чьи характеристики ближе к требованиям именно этой позиции.
+  Не бери заведомо несовместимый ряд, если есть ближе.
+  Если часть requirements явно про другое изделие/другую строку перечня —
+  игнорируй их при подборе, не отвергай из‑за них подходящий аналог.
+- Аналог разрешён только того же класса изделия (источник питания к источнику питания,
+  зарядное к зарядному, розетка к розетке). Чужой тип в тендере («тип X или аналог»)
+  не обязан встречаться в эталоне — подбирай нашу модель того же класса из цитат.
+- Запрещено подменять класс: внутренний узел другого изделия (например зарядка
+  в составе ИБП) — это не позиция «зарядное устройство».
+- product_name обязан буквально встречаться в одной из цитат asset_hits
+  (артикул/модель как в тексте). Если в цитатах этого нет — product_name=""
+  и status=none. Не копируй required_product из тендера.
+- matched=true и status=matched|partial допустимы ТОЛЬКО если product_name непустой.
+  Иначе matched=false и status=none.
+- required_product сам по себе НИКОГДА не даёт matched/partial.
+- Одно лишь упоминание категории без конкретной модели/серии в цитатах → status=none.
+- status=matched — конкретное изделие из эталона закрывает позицию (как аналог или
+  как то же обозначение) и ключевые требования подтверждены цитатами.
+- status=partial — конкретное изделие из эталона есть, но покрытие неполное
+  (часть требований/комплектующих не подтверждена).
+- Если позиция — комплект, а в эталоне подтверждено только основное изделие —
+  status=partial, matched=true при непустом product_name.
+- status=none — в цитатах нет конкретного изделия нашего каталога по этой позиции.
 
 Явное обозначение в предмете/позиции закупки:
-- Если в position.name уже указана конкретная модель/серия/полный код изделия
-  (например «МИР С-05.…-G2…»), и эта же линейка/обозначение есть в asset_hits —
-  считай это сильным подтверждением именно этой модификации.
-- Опции, заложенные в таком коде (интерфейс G/G2, реле, исполнение и т.п.),
-  не переводи в partial только потому, что отдельное требование (GSM, SIM, …)
-  не продублировано отдельной цитатой эталона: заказчик уже зафиксировал прибор
-  в перечне.
-- partial из‑за опций ставь только если в эталоне прямо видно противоречие
-  (другая модификация без нужной опции) или в позиции нет конкретного кода,
-  а в цитатах опция лишь как возможная для серии.
+- Совпадение кода тендера с линейкой в эталоне усиливает уверенность (можно matched).
+- Если кода тендера в эталоне нет, но есть конкретный аналог (серия/модель в цитате)
+  того же типа изделия — это тоже подбор, обычно partial, не none.
+- Без непустого product_name из эталона код в тендере НЕ даёт matched/partial.
+- Опции в коде изделия не переводи в partial только из‑за отсутствия отдельной
+  цитаты — если само изделие уже подобрано из эталона.
 """.strip()
+
+
+def _normalize_ground_text(text: str) -> str:
+    return "".join(ch.casefold() if ch.isalnum() else " " for ch in text)
+
+
+def product_name_in_hits(product_name: str, hits: list[Evidence]) -> bool:
+    """True, если обозначение изделия есть в цитатах эталона (не только в тендере)."""
+    name = " ".join((product_name or "").split())
+    if len(name) < 3:
+        return False
+    quotes = " ".join(hit.quote or "" for hit in hits)
+    spaced = " ".join(_normalize_ground_text(quotes).split())
+    needle = " ".join(_normalize_ground_text(name).split())
+    if needle and needle in spaced:
+        return True
+    compact_name = "".join(ch for ch in name.casefold() if ch.isalnum())
+    compact_quotes = "".join(ch for ch in quotes.casefold() if ch.isalnum())
+    return len(compact_name) >= 5 and compact_name in compact_quotes
 
 
 def _stable_requirements(requirements: list[ExtractedRequirement],) -> list[ExtractedRequirement]:
@@ -87,7 +120,7 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
     qty = scope_item.get("qty")
     unit = str(scope_item.get("unit") or "").strip()
     requirements = _stable_requirements(requirements)
-    asset_hits = dedupe_evidence_by_file(asset_hits)
+    asset_hits = cap_evidence_per_file(asset_hits, per_file=5, limit=12)
     base = ScopePositionMatch(
         scope_name=scope_name,
         qty=qty if isinstance(qty, (int, float)) or qty is None else None,
@@ -173,7 +206,12 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
 
     required_product = " ".join(str(data.get("required_product") or "").split())
     product_name = " ".join(str(data.get("product_name") or "").split())
-    if status == PositionMatchStatus.none:
+    if product_name and not product_name_in_hits(product_name, asset_hits):
+        product_name = ""
+    # Без конкретного изделия из эталона matched/partial недопустимы.
+    if not product_name:
+        status = PositionMatchStatus.none
+    elif status == PositionMatchStatus.none:
         product_name = ""
 
     try:
@@ -220,10 +258,10 @@ def retrieve_hits_for_position(scope_name: str, requirements: list[ExtractedRequ
             meta={"scope_name": scope_name, "requirements_count": len(requirements)},
         )
         return []
-    fetch_k = max(top_k * 2, top_k)
+    fetch_k = max(top_k * 4, 16)
     hit_lists = retrieve_for_queries(assets_index, [query], top_k=fetch_k)
     raw_hits = list(hit_lists[0]) if hit_lists else []
-    hits = dedupe_hits_by_file(raw_hits, limit=top_k)
+    hits = cap_hits_per_file(raw_hits, per_file=5, limit=max(top_k * 3, 12))
     hit_payload = []
     for hit in hits:
         node = getattr(hit, "node", None)

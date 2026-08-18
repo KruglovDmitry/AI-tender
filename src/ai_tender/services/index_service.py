@@ -242,8 +242,8 @@ def node_to_evidence(node: BaseNode, score: float | None = None):
     meta = node.metadata or {}
     text = node.get_content(metadata_mode="none")
     quote = " ".join(text.split())
-    if len(quote) > 500:
-        quote = quote[:499] + "…"
+    if len(quote) > 1600:
+        quote = quote[:1599] + "…"
     return Evidence(
         file=str(meta.get("file_path") or meta.get("file_name") or "unknown"),
         location=str(meta.get("location") or "фрагмент"),

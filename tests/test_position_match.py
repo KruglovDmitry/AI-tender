@@ -2,10 +2,11 @@ from unittest.mock import MagicMock
 
 from ai_tender.nodes.scope import scope_has_detailed_list
 from ai_tender.models import Evidence, ExtractedRequirement, PositionMatchStatus, ScopePositionMatch
-from ai_tender.nodes.common import dedupe_evidence_by_file
+from ai_tender.nodes.common import cap_evidence_per_file, dedupe_evidence_by_file
 from ai_tender.nodes.match import (
     match_scope_position,
     position_to_query_text,
+    product_name_in_hits,
 )
 from ai_tender.nodes.verdict import build_tender_verdict
 
@@ -27,6 +28,17 @@ def test_dedupe_evidence_by_file() -> None:
     assert len(out) == 2
     assert out[0].quote == "y"
     assert out[0].score == 0.9
+
+
+def test_cap_evidence_per_file_keeps_several_chunks() -> None:
+    hits = [
+        Evidence(file="a.pdf", location="1", quote="intro", score=0.9),
+        Evidence(file="a.pdf", location="2", quote="SR33020-6x9", score=0.8),
+        Evidence(file="a.pdf", location="3", quote="extra", score=0.7),
+        Evidence(file="b.pdf", location="1", quote="other", score=0.6),
+    ]
+    out = cap_evidence_per_file(hits, per_file=2, limit=4)
+    assert [h.quote for h in out] == ["intro", "SR33020-6x9", "other"]
 
 
 def test_position_to_query_text() -> None:
@@ -120,6 +132,74 @@ def test_match_scope_position_keeps_required_when_none() -> None:
     assert match.product_name == ""
 
 
+def test_empty_product_name_forces_none_from_partial() -> None:
+    llm = MagicMock()
+    llm.complete.return_value = (
+        '{"matched": true, "status": "partial", '
+        '"required_product": "CHR 240-12-E-100", "product_name": "", '
+        '"explanation": "В эталоне нет конкретной модели.", "confidence": 0.1}'
+    )
+    hit = Evidence(file="asset.pdf", location="стр. 1", quote="зарядное устройство")
+    match = match_scope_position(
+        llm,
+        scope_item={"name": "Зарядное устройство CHR 240-12-E-100", "qty": 1, "unit": "шт."},
+        requirements=[],
+        asset_hits=[hit],
+    )
+    assert match.status == PositionMatchStatus.none
+    assert match.required_product == "CHR 240-12-E-100"
+    assert match.product_name == ""
+
+
+def test_empty_product_name_forces_none_from_matched() -> None:
+    llm = MagicMock()
+    llm.complete.return_value = (
+        '{"matched": true, "status": "matched", '
+        '"required_product": "OPL/R ECO LED 595 4000R", "product_name": "", '
+        '"explanation": "В позиции указана модель.", "confidence": 0.9}'
+    )
+    hit = Evidence(file="asset.pdf", location="стр. 1", quote="светильник светодиодный")
+    match = match_scope_position(
+        llm,
+        scope_item={
+            "name": "Светильник светодиодный OPL/R ECO LED 595 4000R",
+            "qty": 14,
+            "unit": "шт.",
+        },
+        requirements=[],
+        asset_hits=[hit],
+    )
+    assert match.status == PositionMatchStatus.none
+    assert match.required_product == "OPL/R ECO LED 595 4000R"
+    assert match.product_name == ""
+
+
+def test_product_name_in_hits_accepts_sku_from_quote() -> None:
+    hits = [Evidence(file="a.pdf", location="1", quote="Модель SR33020-6x9 20 кВА")]
+    assert product_name_in_hits("SR33020-6x9", hits)
+    assert not product_name_in_hits("ERO11-K01-16-DC", hits)
+
+
+def test_ungrounded_product_name_from_tender_becomes_none() -> None:
+    llm = MagicMock()
+    llm.complete.return_value = (
+        '{"matched": true, "status": "matched", '
+        '"required_product": "ERO11-K01-16-DC", '
+        '"product_name": "ERO11-K01-16-DC", '
+        '"explanation": "Артикул указан в требованиях.", "confidence": 1.0}'
+    )
+    hit = Evidence(file="asset.pdf", location="стр. 1", quote="ИБП Штиль серии SR33")
+    match = match_scope_position(
+        llm,
+        scope_item={"name": "Розетка 1-местная", "qty": 13, "unit": "шт."},
+        requirements=[],
+        asset_hits=[hit],
+    )
+    assert match.status == PositionMatchStatus.none
+    assert match.required_product == "ERO11-K01-16-DC"
+    assert match.product_name == ""
+
+
 def test_match_scope_position_bad_json_becomes_none() -> None:
     llm = MagicMock()
     llm.complete.return_value = "это не json {{{"
@@ -154,7 +234,7 @@ def test_match_matched_true_with_none_status_becomes_partial() -> None:
     )
     assert match.status == PositionMatchStatus.partial
     assert match.product_name == "Серия A"
-    assert len(match.asset_hits) == 1
+    assert len(match.asset_hits) == 2
 
 
 def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:

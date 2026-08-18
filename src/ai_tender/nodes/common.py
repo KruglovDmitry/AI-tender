@@ -191,6 +191,54 @@ def _hit_file_path(hit) -> str:
     return str(meta.get("file_path") or meta.get("file_name") or "")
 
 
+def cap_items_per_file(
+    items: list,
+    *,
+    file_of,
+    score_of,
+    per_file: int = 4,
+    limit: int | None = None,
+) -> list:
+    """До per_file элементов на файл, порядок исходного списка (retrieval rank)."""
+    counts: dict[str, int] = {}
+    output: list = []
+    for item in items:
+        key = _file_key(str(file_of(item) or ""), item)
+        used = counts.get(key, 0)
+        if used >= per_file:
+            continue
+        counts[key] = used + 1
+        output.append(item)
+        if limit is not None and len(output) >= max(0, limit):
+            break
+    return output
+
+
+def cap_evidence_per_file(
+    hits: list[Evidence],
+    *,
+    per_file: int = 4,
+    limit: int | None = None,
+) -> list[Evidence]:
+    return cap_items_per_file(
+        hits,
+        file_of=lambda hit: hit.file,
+        score_of=lambda hit: hit.score,
+        per_file=per_file,
+        limit=limit,
+    )
+
+
+def cap_hits_per_file(hits: list, *, per_file: int = 4, limit: int | None = None) -> list:
+    return cap_items_per_file(
+        hits,
+        file_of=_hit_file_path,
+        score_of=lambda hit: getattr(hit, "score", None),
+        per_file=per_file,
+        limit=limit,
+    )
+
+
 def dedupe_hits_by_file(hits: list, *, limit: int | None = None) -> list:
     """Один лучший retrieval-hit на файл (по score)."""
     return _dedupe_by_file(
