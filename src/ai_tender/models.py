@@ -69,6 +69,9 @@ class ScopePositionMatch(BaseModel):
     unit: str = ""
     requirements: list[ExtractedRequirement] = Field(default_factory=list)
     status: PositionMatchStatus = PositionMatchStatus.none
+    # Конкретное обозначение из тендера (позиция/требования), если заказчик его задал.
+    required_product: str = ""
+    # Подобранный вариант из цитат эталона (assets).
     product_name: str = ""
     explanation: str = ""
     asset_hits: list[Evidence] = Field(default_factory=list)

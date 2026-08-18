@@ -83,7 +83,9 @@ def test_match_scope_position_no_hits() -> None:
 def test_match_scope_position_parses_llm() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": true, "status": "matched", "product_name": "Модель-10", '
+        '{"matched": true, "status": "matched", '
+        '"required_product": "Модель-10 или аналог", '
+        '"product_name": "Модель-10", '
         '"explanation": "Модель подходит по напряжению.", "confidence": 0.8}'
     )
     hit = Evidence(file="asset.pdf", location="стр. 1", quote="Модель-10 6-10 кВ")
@@ -94,8 +96,28 @@ def test_match_scope_position_parses_llm() -> None:
         asset_hits=[hit],
     )
     assert match.status == PositionMatchStatus.matched
+    assert match.required_product == "Модель-10 или аналог"
     assert match.product_name == "Модель-10"
     assert "напряжению" in match.explanation
+
+
+def test_match_scope_position_keeps_required_when_none() -> None:
+    llm = MagicMock()
+    llm.complete.return_value = (
+        '{"matched": false, "status": "none", '
+        '"required_product": "Тип X", "product_name": "Тип X", '
+        '"explanation": "В эталоне нет подтверждения.", "confidence": 0.2}'
+    )
+    hit = Evidence(file="asset.pdf", location="стр. 1", quote="другая серия")
+    match = match_scope_position(
+        llm,
+        scope_item={"name": "позиция", "qty": 1, "unit": "шт."},
+        requirements=[],
+        asset_hits=[hit],
+    )
+    assert match.status == PositionMatchStatus.none
+    assert match.required_product == "Тип X"
+    assert match.product_name == ""
 
 
 def test_match_scope_position_bad_json_becomes_none() -> None:

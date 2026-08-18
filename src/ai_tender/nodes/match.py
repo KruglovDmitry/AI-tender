@@ -29,14 +29,21 @@ POSITION_MATCH_SCHEMA_HINT = """
 {
   "matched": true|false,
   "status": "matched|partial|none",
-  "product_name": "модель/серия/обозначение из цитат эталона или пустая строка",
+  "required_product": "конкретная модель/тип из тендера (position/requirements) или пустая строка",
+  "product_name": "подобранная модель/серия из цитат эталона или пустая строка",
   "explanation": "1-2 предложения: почему подходит или почему нет",
   "confidence": 0.0..1.0
 }
 
 Правила:
 - Опирайся ТОЛЬКО на position, requirements и asset_hits.
-- product_name указывай ТОЛЬКО если он явно есть в цитатах эталона; пиши как в цитате.
+- required_product и product_name — РАЗНЫЕ поля, не смешивай источники.
+- required_product: заполняй ТОЛЬКО если в названии позиции или в требованиях явно
+  указано конкретное обозначение/тип/модель того, что нужно купить
+  (в т.ч. формулировки «тип X или аналог»). Пиши кратко обозначение, без «или аналог».
+  Если в тендере только обобщённое описание без конкретной модели — оставь "".
+- product_name: заполняй ТОЛЬКО из цитат эталона (asset_hits); пиши как в цитате.
+  Не копируй required_product в product_name, если этого обозначения нет в asset_hits.
 - matched=true если есть конкретный подходящий вариант основного изделия позиции.
 - status=matched — основное изделие закрыто и ключевые требования подтверждены цитатами
   либо явно заданы обозначением в названии позиции (см. ниже).
@@ -164,6 +171,7 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
     if matched and status == PositionMatchStatus.none:
         status = PositionMatchStatus.partial
 
+    required_product = " ".join(str(data.get("required_product") or "").split())
     product_name = " ".join(str(data.get("product_name") or "").split())
     if status == PositionMatchStatus.none:
         product_name = ""
@@ -174,6 +182,7 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
         confidence = 0.0
 
     base.status = status
+    base.required_product = required_product
     base.product_name = product_name
     base.explanation = str(data.get("explanation") or "").strip()
     if not base.explanation and status == PositionMatchStatus.none:

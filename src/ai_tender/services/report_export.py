@@ -44,10 +44,14 @@ def report_to_markdown(report: AnalysisReport) -> str:
                 qty = f" — {match.qty} {match.unit}".rstrip()
             lines.append(f"### {index}. {match.scope_name}{qty}")
             lines.append(f"- Статус: **{status}** (conf={match.confidence:.2f})")
-            if match.status == PositionMatchStatus.none or not match.product_name:
-                lines.append("- Эталон: нет подходящего варианта")
+            if match.required_product:
+                lines.append(f"- Требуется: {match.required_product}")
             else:
-                lines.append(f"- Эталон: {match.product_name}")
+                lines.append("- Требуется: конкретное обозначение в тендере не указано")
+            if match.status == PositionMatchStatus.none or not match.product_name:
+                lines.append("- Подобрано: нет подходящего варианта")
+            else:
+                lines.append(f"- Подобрано: {match.product_name}")
             if match.explanation:
                 lines.append(f"- Пояснение: {match.explanation}")
             if match.requirements:

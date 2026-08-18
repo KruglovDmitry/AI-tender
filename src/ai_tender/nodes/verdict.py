@@ -69,6 +69,7 @@ def build_tender_verdict(
                 "qty": item.qty,
                 "unit": item.unit,
                 "status": item.status.value,
+                "required_product": item.required_product,
                 "product_name": item.product_name,
                 "requirements_count": len(item.requirements),
                 "explanation": item.explanation,

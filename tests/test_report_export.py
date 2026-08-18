@@ -16,6 +16,7 @@ def test_report_export_markdown_and_json() -> None:
                 unit="шт",
                 status=PositionMatchStatus.partial,
                 product_name="Модель X",
+                required_product="Модель X или аналог",
                 explanation="Есть основное изделие.",
                 confidence=0.7,
             )
@@ -27,6 +28,8 @@ def test_report_export_markdown_and_json() -> None:
     md = report_to_markdown(report)
     assert "Подходит частично" in md
     assert "Счётчик" in md
+    assert "Требуется: Модель X или аналог" in md
+    assert "Подобрано: Модель X" in md
     assert "Модель X" in md
 
     raw = report_to_json_bytes(report)

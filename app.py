@@ -418,10 +418,15 @@ def render_report(report: AnalysisReport, tender_root: str, assets_root: str) ->
                     else:
                         st.caption("Требования не найдены.")
 
-                    if match.status == PositionMatchStatus.none or not match.product_name:
-                        st.markdown("**Эталон:** нет подходящего варианта")
+                    if match.required_product:
+                        st.markdown(f"**Требуется:** {match.required_product}")
                     else:
-                        st.markdown(f"**Эталон:** {match.product_name}")
+                        st.caption("Требуется: конкретное обозначение в тендере не указано")
+
+                    if match.status == PositionMatchStatus.none or not match.product_name:
+                        st.markdown("**Подобрано:** нет подходящего варианта")
+                    else:
+                        st.markdown(f"**Подобрано:** {match.product_name}")
                     if match.explanation:
                         st.write(match.explanation)
                     if match.asset_hits:
