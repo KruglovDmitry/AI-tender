@@ -2,6 +2,7 @@ import zipfile
 from pathlib import Path
 
 from ai_tender.services.upload_service import (
+    append_uploaded_files,
     cleanup_old_uploads,
     prepare_upload_dir,
     replace_shared_assets,
@@ -79,6 +80,41 @@ def test_replace_shared_assets_clears_previous(tmp_path: Path) -> None:
     replace_shared_assets([_FakeUpload("new.txt", b"new")], assets)
     assert not (assets / "old.txt").exists()
     assert (assets / "new.txt").read_bytes() == b"new"
+
+
+def test_append_uploaded_files_keeps_existing(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "old.txt").write_text("old", encoding="utf-8")
+
+    root, warnings, changed = append_uploaded_files(
+        [_FakeUpload("new.txt", b"new content")],
+        assets,
+    )
+    assert root == assets.resolve()
+    assert not warnings
+    assert (assets / "old.txt").read_text(encoding="utf-8") == "old"
+    assert (assets / "new.txt").read_bytes() == b"new content"
+    assert "new.txt" in changed
+
+
+def test_append_uploaded_files_unpacks_zip(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "keep.txt").write_text("keep", encoding="utf-8")
+
+    archive = tmp_path / "pack.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("docs/a.txt", "from-zip")
+
+    _root, warnings, changed = append_uploaded_files(
+        [_FakeUpload("pack.zip", archive.read_bytes())],
+        assets,
+    )
+    assert not warnings
+    assert (assets / "keep.txt").exists()
+    assert (assets / "pack" / "docs" / "a.txt").is_file()
+    assert any(path.endswith("a.txt") for path in changed)
 
 
 def test_cleanup_old_uploads(tmp_path: Path, monkeypatch) -> None:

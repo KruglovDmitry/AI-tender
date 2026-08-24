@@ -113,6 +113,72 @@ def replace_shared_assets(
     return prepare_upload_dir(files, assets_root.expanduser().resolve())
 
 
+def append_uploaded_files(
+    files: list[UploadedLike],
+    assets_root: Path,
+) -> tuple[Path, list[str], list[str]]:
+    """Добавляет файлы в каталог эталонов без очистки существующего содержимого.
+
+    Возвращает (assets_root, warnings, relative_paths новых/изменённых файлов).
+    """
+    if not files:
+        raise ValueError("Не выбраны файлы для загрузки.")
+    assets_root = assets_root.expanduser().resolve()
+    assets_root.mkdir(parents=True, exist_ok=True)
+    warnings: list[str] = []
+
+    before = {
+        path.relative_to(assets_root).as_posix()
+        for path in assets_root.rglob("*")
+        if path.is_file()
+    }
+    before_mtime = {
+        path.relative_to(assets_root).as_posix(): path.stat().st_mtime_ns
+        for path in assets_root.rglob("*")
+        if path.is_file()
+    }
+
+    save_uploaded_files(files, assets_root)
+    expand_top_level_archives(assets_root, warnings)
+
+    after_paths = [
+        path for path in assets_root.rglob("*") if path.is_file()
+    ]
+    if not after_paths:
+        raise ValueError("После загрузки не осталось файлов (пустой архив?).")
+
+    changed: list[str] = []
+    for path in after_paths:
+        rel = path.relative_to(assets_root).as_posix()
+        if rel not in before:
+            changed.append(rel)
+            continue
+        try:
+            if path.stat().st_mtime_ns != before_mtime.get(rel):
+                changed.append(rel)
+        except OSError:
+            changed.append(rel)
+
+    # Если архив заменил одноимённые файлы с тем же mtime (редко) — всё равно
+    # отметим имена загруженных top-level объектов.
+    if not changed:
+        for item in files:
+            name = safe_filename(item.name)
+            stem = Path(name).stem
+            suffix = Path(name).suffix.lower()
+            if suffix in ARCHIVES:
+                for path in after_paths:
+                    rel = path.relative_to(assets_root).as_posix()
+                    if rel == name or rel.startswith(f"{stem}/") or rel.startswith(
+                        f"{stem}_unpacked/"
+                    ):
+                        changed.append(rel)
+            elif (assets_root / name).is_file():
+                changed.append(name)
+
+    return assets_root, warnings, sorted(set(changed))
+
+
 def list_files_relative(folder: Path, limit: int = 50) -> list[str]:
     paths = sorted(
         path.relative_to(folder).as_posix()

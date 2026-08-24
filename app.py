@@ -12,14 +12,19 @@ from ai_tender.models import (
     PositionMatchStatus,
     get_settings,
 )
-from ai_tender.services.index_service import indexed_file_paths, load_or_build_assets_index
+from ai_tender.services.index_service import (
+    add_assets_to_index,
+    get_assets_index_status,
+    indexed_file_paths,
+    remove_asset_from_index,
+)
 from ai_tender.services.ocr_service import ocr_status
 from ai_tender.services.report_export import report_to_json_bytes, report_to_markdown
 from ai_tender.services.upload_service import (
+    append_uploaded_files,
     cleanup_old_uploads,
     new_run_dir,
     prepare_upload_dir,
-    replace_shared_assets,
 )
 from ai_tender.graph import analyze, warm_up_graph
 
@@ -151,6 +156,20 @@ st.markdown(
     .pos-match-status.is-none { color: #ff6b6b; }
     .pos-match-status.is-partial { color: #ffd166; }
     .pos-match-status.is-matched { color: #6bcb77; }
+    [data-testid="stSidebar"] .assets-add-zone [data-testid="stFileUploader"] section {
+        padding: 0.55rem 0.75rem !important;
+    }
+    [data-testid="stSidebar"] .assets-add-zone [data-testid="stFileUploaderDropzone"] {
+        min-height: 2.75rem !important;
+    }
+    /* Streamlit не даёт задать текст кнопки uploader — подменяем Upload → Загрузить */
+    [data-testid="stSidebar"] .assets-add-zone [data-testid="stFileUploaderDropzone"] button p {
+        font-size: 0 !important;
+    }
+    [data-testid="stSidebar"] .assets-add-zone [data-testid="stFileUploaderDropzone"] button p::after {
+        content: "Загрузить";
+        font-size: 0.875rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -508,60 +527,121 @@ with st.sidebar:
         st.success(_assets_update_message)
 
     with st.expander("Эталоны", expanded=False):
-        st.caption(
-            "Эталоны — справочные ТС продукции на сервере. "
-            "По ним сравнивается тендер. Обновление заменяет общий комплект "
-            "для стенда и сразу строит индекс."
-        )
-        info = st.session_state.get("assets_index_info")
-        if info and info.get("files"):
-            st.caption(f"В индексе: {len(info['files'])} файл(ов)")
+        assets_root = Path(st.session_state.assets_folder).expanduser().resolve()
+        try:
+            status = get_assets_index_status(
+                assets_root,
+                settings.cache_dir,
+                settings.embedding_model,
+                settings.chunk_size,
+                settings.chunk_overlap,
+                ocr_enabled=settings.ocr_enabled,
+                ocr_languages=settings.ocr_languages,
+            )
+        except Exception:
+            status = {"files": [], "warnings": []}
+
+        indexed_rows = [
+            row
+            for row in (status.get("files") or [])
+            if str(row.get("rel_path") or "").strip()
+        ]
+
+        if indexed_rows:
+            for row in indexed_rows:
+                rel = str(row.get("rel_path") or "")
+                col_name, col_del = st.columns([5, 1])
+                with col_name:
+                    st.markdown(f"`{rel}`")
+                with col_del:
+                    if st.button(
+                        "🗑",
+                        key=f"del_asset_{rel}",
+                        help=f"Удалить {rel}",
+                        width="stretch",
+                    ):
+                        try:
+                            progress = st.progress(0, text=f"Удаление {rel}…")
+                            progress.progress(40, text=f"Удаление из индекса: {rel}…")
+                            _idx, nodes, rm_warnings = remove_asset_from_index(
+                                assets_root,
+                                settings.cache_dir,
+                                rel,
+                                settings.embedding_model,
+                                settings.chunk_size,
+                                settings.chunk_overlap,
+                                device=settings.embedding_device,
+                                ocr_enabled=settings.ocr_enabled,
+                                ocr_languages=settings.ocr_languages,
+                            )
+                            progress.progress(100, text="Готово")
+                            files = indexed_file_paths(nodes) if nodes else []
+                            st.session_state["assets_index_info"] = {
+                                "files": files,
+                                "warnings": rm_warnings,
+                            }
+                            st.session_state["assets_update_message"] = f"Удалён: {rel}"
+                            st.rerun()
+                        except Exception as exc:
+                            st.exception(exc)
+        else:
+            st.caption("Нет эталонов")
+
+        if "assets_uploader_nonce" not in st.session_state:
+            st.session_state.assets_uploader_nonce = 0
+
+        st.markdown('<div class="assets-add-zone">', unsafe_allow_html=True)
         assets_uploads = st.file_uploader(
-            "Новый пакет (файлы или ZIP/RAR)",
+            "Загрузить эталон",
             accept_multiple_files=True,
-            key="assets_uploader",
+            key=f"assets_uploader_{st.session_state.assets_uploader_nonce}",
+            label_visibility="collapsed",
         )
-        if st.button(
-            "Обновить эталоны",
-            key="update_assets_btn",
-            type="secondary",
-            width="stretch",
-            disabled=not assets_uploads,
-        ):
-            try:
-                with st.spinner("Сохранение эталонов..."):
-                    assets_root = Path(st.session_state.assets_folder).expanduser()
-                    _, upload_warnings = replace_shared_assets(
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if assets_uploads:
+            upload_fp = tuple(
+                (item.name, len(item.getvalue())) for item in assets_uploads
+            )
+            if st.session_state.get("_assets_upload_fp") != upload_fp:
+                st.session_state["_assets_upload_fp"] = upload_fp
+                names = ", ".join(item.name for item in assets_uploads[:3])
+                if len(assets_uploads) > 3:
+                    names += f" и ещё {len(assets_uploads) - 3}"
+                try:
+                    progress = st.progress(0, text=f"Загрузка: {names}")
+                    progress.progress(15, text="Сохранение на диск…")
+                    _, upload_warnings, changed = append_uploaded_files(
                         list(assets_uploads), assets_root
                     )
-                with st.spinner(
-                    "Построение индекса эталонов (может занять несколько минут)..."
-                ):
-                    _index, nodes, index_warnings, reused = load_or_build_assets_index(
-                        assets_root.resolve(),
-                        cache_dir=settings.cache_dir,
-                        embedding_model=settings.embedding_model,
-                        chunk_size=settings.chunk_size,
-                        chunk_overlap=settings.chunk_overlap,
+                    progress.progress(40, text="Индексация (эмбеддинги)…")
+                    _index, nodes, index_warnings = add_assets_to_index(
+                        assets_root,
+                        settings.cache_dir,
+                        changed,
+                        settings.embedding_model,
+                        settings.chunk_size,
+                        settings.chunk_overlap,
                         device=settings.embedding_device,
                         ocr_enabled=settings.ocr_enabled,
                         ocr_languages=settings.ocr_languages,
                     )
-                files = indexed_file_paths(nodes)
-                st.session_state["assets_index_info"] = {
-                    "files": files,
-                    "reused": reused,
-                    "warnings": upload_warnings + index_warnings,
-                }
-                st.session_state["assets_update_message"] = (
-                    f"Эталоны обновлены. Индекс: {len(files)} файлов"
-                    + (" (кэш)" if reused else " (заново)")
-                    + "."
-                )
-                st.rerun()
-            except Exception as exc:
-                st.exception(exc)
-        for warning in (info or {}).get("warnings") or []:
+                    progress.progress(100, text="Готово")
+                    files = indexed_file_paths(nodes)
+                    st.session_state["assets_index_info"] = {
+                        "files": files,
+                        "warnings": upload_warnings + index_warnings,
+                    }
+                    st.session_state["assets_update_message"] = (
+                        f"Добавлено: {len(changed)} · всего {len(files)}"
+                    )
+                    st.session_state.assets_uploader_nonce += 1
+                    st.session_state.pop("_assets_upload_fp", None)
+                    st.rerun()
+                except Exception as exc:
+                    st.exception(exc)
+
+        for warning in (status.get("warnings") or [])[-5:]:
             st.warning(warning)
 
     ocr_enabled = st.checkbox(
