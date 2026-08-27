@@ -17,19 +17,7 @@ from .loader_service import load_documents, split_documents
 
 CURRENT_CACHE_NAME = "current"
 
-_INDEXABLE_SUFFIXES = {
-    ".pdf",
-    ".docx",
-    ".doc",
-    ".dot",
-    ".xlsx",
-    ".xls",
-    ".txt",
-    ".md",
-    ".csv",
-    ".zip",
-    ".rar",
-}
+_INDEXABLE_SUFFIXES = {".pdf"}
 
 
 def _resolve_device(device: str | None) -> str | None:
@@ -446,6 +434,7 @@ def rebuild_assets_index(
     entry_dir = assets_cache_dir(cache_dir)
     if entry_dir.exists():
         shutil.rmtree(entry_dir)
+
     index, nodes, warnings = build_index_from_folder(
         assets_path,
         corpus="assets",
@@ -657,6 +646,9 @@ def remove_asset_from_index(
         )
 
     _delete_paths_from_index(index, [rel])
+    from .indexing.persistance import delete_product_artifacts
+
+    delete_product_artifacts(cache_dir, rel)
     if delete_file:
         target = (assets_path / rel).resolve()
         if not str(target).startswith(str(assets_path.resolve())):

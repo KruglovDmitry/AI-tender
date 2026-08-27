@@ -11,6 +11,7 @@ from typing import Protocol
 from .archive_service import ARCHIVES, unpack_archive
 
 UPLOADS_ROOT = Path("data/uploads")
+ASSETS_ALLOWED_SUFFIXES = {".pdf"}
 
 
 class UploadedLike(Protocol):
@@ -82,6 +83,24 @@ def expand_top_level_archives(folder: Path, warnings: list[str]) -> None:
         archive.unlink(missing_ok=True)
 
 
+def _keep_only_allowed_suffixes(
+    folder: Path,
+    allowed: set[str],
+    warnings: list[str],
+) -> None:
+    """Удаляет из folder файлы с недопустимым расширением."""
+    for path in sorted(folder.rglob("*"), reverse=True):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in allowed:
+            continue
+        rel = path.relative_to(folder).as_posix()
+        path.unlink(missing_ok=True)
+        warnings.append(
+            f"Пропущен файл эталона (допускаются только PDF): {rel}"
+        )
+
+
 def clear_directory(folder: Path) -> None:
     """Очищает содержимое folder, не удаляя сам каталог (безопасно для volume mount)."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -110,7 +129,13 @@ def replace_shared_assets(
     assets_root: Path,
 ) -> tuple[Path, list[str]]:
     """Полностью заменяет содержимое каталога эталонов загруженным пакетом."""
-    return prepare_upload_dir(files, assets_root.expanduser().resolve())
+    dest, warnings = prepare_upload_dir(files, assets_root.expanduser().resolve())
+    _keep_only_allowed_suffixes(dest, ASSETS_ALLOWED_SUFFIXES, warnings)
+    if not any(path.is_file() for path in dest.rglob("*")):
+        raise ValueError(
+            "После загрузки не осталось PDF-файлов эталонов."
+        )
+    return dest, warnings
 
 
 def append_uploaded_files(
@@ -140,12 +165,15 @@ def append_uploaded_files(
 
     save_uploaded_files(files, assets_root)
     expand_top_level_archives(assets_root, warnings)
+    _keep_only_allowed_suffixes(assets_root, ASSETS_ALLOWED_SUFFIXES, warnings)
 
     after_paths = [
         path for path in assets_root.rglob("*") if path.is_file()
     ]
-    if not after_paths:
-        raise ValueError("После загрузки не осталось файлов (пустой архив?).")
+    if not after_paths and not before:
+        raise ValueError(
+            "После загрузки не осталось PDF-файлов эталонов."
+        )
 
     changed: list[str] = []
     for path in after_paths:

@@ -12,12 +12,13 @@ from ai_tender.models import (
     PositionMatchStatus,
     get_settings,
 )
+from ai_tender.providers import build_llm
 from ai_tender.services.index_service import (
-    add_assets_to_index,
     get_assets_index_status,
-    indexed_file_paths,
     remove_asset_from_index,
+    scan_assets_files,
 )
+from ai_tender.services.indexing import index_asset_files
 from ai_tender.services.ocr_service import ocr_status
 from ai_tender.services.report_export import report_to_json_bytes, report_to_markdown
 from ai_tender.services.upload_service import (
@@ -541,29 +542,24 @@ with st.sidebar:
         except Exception:
             status = {"files": [], "warnings": []}
 
-        indexed_rows = [
-            row
-            for row in (status.get("files") or [])
-            if str(row.get("rel_path") or "").strip()
-        ]
+        disk_files = sorted(scan_assets_files(assets_root))
 
-        if indexed_rows:
-            for row in indexed_rows:
-                rel = str(row.get("rel_path") or "")
+        if disk_files:
+            for rel in disk_files:
                 col_name, col_del = st.columns([5, 1])
                 with col_name:
                     st.markdown(f"`{rel}`")
                 with col_del:
                     if st.button(
-                        "🗑",
+                        "✕",
                         key=f"del_asset_{rel}",
                         help=f"Удалить {rel}",
                         width="stretch",
                     ):
                         try:
                             progress = st.progress(0, text=f"Удаление {rel}…")
-                            progress.progress(40, text=f"Удаление из индекса: {rel}…")
-                            _idx, nodes, rm_warnings = remove_asset_from_index(
+                            progress.progress(40, text=f"Удаление: {rel}…")
+                            remove_asset_from_index(
                                 assets_root,
                                 settings.cache_dir,
                                 rel,
@@ -575,11 +571,6 @@ with st.sidebar:
                                 ocr_languages=settings.ocr_languages,
                             )
                             progress.progress(100, text="Готово")
-                            files = indexed_file_paths(nodes) if nodes else []
-                            st.session_state["assets_index_info"] = {
-                                "files": files,
-                                "warnings": rm_warnings,
-                            }
                             st.session_state["assets_update_message"] = f"Удалён: {rel}"
                             st.rerun()
                         except Exception as exc:
@@ -592,7 +583,8 @@ with st.sidebar:
 
         st.markdown('<div class="assets-add-zone">', unsafe_allow_html=True)
         assets_uploads = st.file_uploader(
-            "Загрузить эталон",
+            "Загрузить эталон (PDF)",
+            type=["pdf"],
             accept_multiple_files=True,
             key=f"assets_uploader_{st.session_state.assets_uploader_nonce}",
             label_visibility="collapsed",
@@ -611,30 +603,30 @@ with st.sidebar:
                 try:
                     progress = st.progress(0, text=f"Загрузка: {names}")
                     progress.progress(15, text="Сохранение на диск…")
-                    _, upload_warnings, changed = append_uploaded_files(
+                    _, _, changed = append_uploaded_files(
                         list(assets_uploads), assets_root
                     )
-                    progress.progress(40, text="Индексация (эмбеддинги)…")
-                    _index, nodes, index_warnings = add_assets_to_index(
+                    progress.progress(35, text="Классификация и индексация по типу…")
+                    llm = build_llm(settings)
+                    results, _ = index_asset_files(
                         assets_root,
-                        settings.cache_dir,
                         changed,
-                        settings.embedding_model,
-                        settings.chunk_size,
-                        settings.chunk_overlap,
-                        device=settings.embedding_device,
-                        ocr_enabled=settings.ocr_enabled,
+                        llm,
+                        cache_dir=settings.cache_dir,
+                        embedding_model=settings.embedding_model,
+                        embedding_device=settings.embedding_device,
+                        ocr_enabled=False,
                         ocr_languages=settings.ocr_languages,
                     )
                     progress.progress(100, text="Готово")
-                    files = indexed_file_paths(nodes)
-                    st.session_state["assets_index_info"] = {
-                        "files": files,
-                        "warnings": upload_warnings + index_warnings,
-                    }
+                    indexed_n = sum(1 for r in results if r.status.value == "indexed")
+                    skipped_n = sum(1 for r in results if r.status.value == "skipped")
+                    failed_n = sum(1 for r in results if r.status.value == "failed")
                     st.session_state["assets_update_message"] = (
-                        f"Добавлено: {len(changed)} · всего {len(files)}"
+                        f"Обработано: {len(changed)} "
+                        f"(индекс: {indexed_n}, пропущено: {skipped_n}, ошибок: {failed_n})"
                     )
+                    st.session_state.pop("assets_type_messages", None)
                     st.session_state.assets_uploader_nonce += 1
                     st.session_state.pop("_assets_upload_fp", None)
                     st.rerun()

@@ -2,6 +2,7 @@ from enum import StrEnum
 from pathlib import Path
 import operator
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
 from dotenv import load_dotenv
@@ -50,6 +51,142 @@ POSITION_STATUS_LABELS = {
     PositionMatchStatus.partial.value: "Частично",
     PositionMatchStatus.none.value: "Нет варианта",
 }
+
+
+class DocumentKind(StrEnum):
+    """Тип эталонного документа для выбора индексатора."""
+
+    catalog = "catalog"
+    product = "product"
+    other = "other"
+
+
+DOCUMENT_KIND_LABELS: dict[DocumentKind, str] = {
+    DocumentKind.catalog: "каталог",
+    DocumentKind.product: "описание/паспорт продукта",
+    DocumentKind.other: "прочее",
+}
+
+
+class IndexingStatus(StrEnum):
+    """Статус обработки файла индексатором."""
+
+    skipped = "skipped"  # не индексируем (прочее)
+    pending = "pending"  # тип определён, спец. логика ещё не реализована
+    indexed = "indexed"  # успешно проиндексирован своим индексатором
+    failed = "failed"
+
+
+@dataclass
+class IndexingResult:
+    """Результат индексации одного файла (для UI / оркестратора)."""
+
+    relative_path: str
+    doc_kind: DocumentKind
+    status: IndexingStatus
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class IndexingContext:
+    """Контекст для индексатора (OCR, LLM и т.п.)."""
+
+    assets_path: Path
+    cache_dir: Path | None = None
+    llm: Any = None
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_device: str | None = None
+    ocr_enabled: bool = True
+    ocr_languages: str = "rus+eng"
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+class AttributeType(StrEnum):
+    numeric_range = "numeric_range"
+    categorical = "categorical"
+    bool = "bool"
+    standard_ref = "standard_ref"
+    text = "text"
+
+
+# Фиксированный словарь канонических ключей атрибутов для LLM и поиска.
+CANONICAL_ATTRIBUTE_KEYS: tuple[str, ...] = (
+    "voltage",
+    "voltage_dc",
+    "power",
+    "power_apparent",
+    "frequency",
+    "current",
+    "capacity",
+    "ip_rating",
+    "temperature_min",
+    "temperature_max",
+    "dimensions",
+    "weight",
+    "efficiency",
+    "phase",
+    "form_factor",
+    "battery_type",
+    "runtime",
+    "interface",
+    "mounting",
+    "material",
+    "warranty",
+    "other",
+)
+
+
+class AttributeValueNorm(BaseModel):
+    """Нормализованное значение атрибута."""
+
+    num: float | None = None
+    num_max: float | None = None
+    unit: str | None = None
+    tol: float | None = None
+    text: str | None = None
+    bool_value: bool | None = None
+
+
+class ProductAttribute(BaseModel):
+    key_canonical: str = "other"
+    key_raw: str = ""
+    value_norm: AttributeValueNorm = Field(default_factory=AttributeValueNorm)
+    value_raw: str = ""
+    type: AttributeType = AttributeType.text
+
+
+class ProductSource(BaseModel):
+    catalog_id: str = ""
+    version: str = ""
+    page: int | None = None
+    bbox: list[float] | None = None
+
+
+class Product(BaseModel):
+    """Продукт, извлечённый из каталога или паспорта."""
+
+    id: str = ""
+    model: str = ""
+    manufacturer: str = ""
+    category: str = ""
+    canonical_desc: str = ""
+    raw_chunk: str = ""
+    source: ProductSource = Field(default_factory=ProductSource)
+    attributes: list[ProductAttribute] = Field(default_factory=list)
+    standards: list[str] = Field(default_factory=list)
+
+
+class ProductDocumentIndex(BaseModel):
+    """JSON-индекс одного исходного файла (каталог или паспорт)."""
+
+    source_file: str
+    doc_kind: DocumentKind
+    catalog_name: str = ""
+    products: list[Product] = Field(default_factory=list)
+    embedding_model: str = ""
+    warnings: list[str] = Field(default_factory=list)
+
 
 DEFAULT_USER_INSTRUCTION = (
     "Эталон — подробное техническое описание изготавливаемой нами продукции. "

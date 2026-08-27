@@ -346,3 +346,54 @@ def split_documents(
 ):
     splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     return splitter.get_nodes_from_documents(documents)
+
+
+def join_first_pages(
+    docs: list[Document],
+    *,
+    max_pages: int,
+    max_chars: int,
+) -> str:
+    """Склеивает текст первых страниц/фрагментов из LlamaIndex Documents."""
+    if not docs:
+        return ""
+
+    def page_key(doc: Document) -> int:
+        meta = doc.metadata or {}
+        raw = meta.get("page_number")
+        if raw is None:
+            raw = meta.get("page_label")
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return 10**9
+
+    ordered = sorted(docs, key=page_key)
+    # Если page_number нет — просто первые max_pages документов.
+    if all(page_key(d) == 10**9 for d in ordered):
+        ordered = docs[:max_pages]
+    else:
+        seen_pages: set[int] = set()
+        picked: list[Document] = []
+        for doc in ordered:
+            p = page_key(doc)
+            if p in seen_pages:
+                continue
+            seen_pages.add(p)
+            picked.append(doc)
+            if len(picked) >= max_pages:
+                break
+        ordered = picked
+
+    parts: list[str] = []
+    for doc in ordered:
+        body = (doc.text or "").strip()
+        if not body:
+            continue
+        loc = str((doc.metadata or {}).get("location") or "").strip()
+        if loc:
+            parts.append(f"--- {loc} ---\n{body}")
+        else:
+            parts.append(body)
+    text = "\n\n".join(parts).strip()
+    return text[:max_chars] if len(text) > max_chars else text

@@ -75,46 +75,62 @@ def test_expand_top_level_archives_cleans_failed_dest(tmp_path: Path, monkeypatc
 def test_replace_shared_assets_clears_previous(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
-    (assets / "old.txt").write_text("old", encoding="utf-8")
+    (assets / "old.pdf").write_bytes(b"%PDF-1.1 old")
 
-    replace_shared_assets([_FakeUpload("new.txt", b"new")], assets)
-    assert not (assets / "old.txt").exists()
-    assert (assets / "new.txt").read_bytes() == b"new"
+    replace_shared_assets([_FakeUpload("new.pdf", b"%PDF-1.1 new")], assets)
+    assert not (assets / "old.pdf").exists()
+    assert (assets / "new.pdf").read_bytes() == b"%PDF-1.1 new"
 
 
 def test_append_uploaded_files_keeps_existing(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
-    (assets / "old.txt").write_text("old", encoding="utf-8")
+    (assets / "old.pdf").write_bytes(b"%PDF-1.1 old")
 
     root, warnings, changed = append_uploaded_files(
-        [_FakeUpload("new.txt", b"new content")],
+        [_FakeUpload("new.pdf", b"%PDF-1.1 new content")],
         assets,
     )
     assert root == assets.resolve()
-    assert not warnings
-    assert (assets / "old.txt").read_text(encoding="utf-8") == "old"
-    assert (assets / "new.txt").read_bytes() == b"new content"
-    assert "new.txt" in changed
+    assert (assets / "old.pdf").read_bytes() == b"%PDF-1.1 old"
+    assert (assets / "new.pdf").read_bytes() == b"%PDF-1.1 new content"
+    assert "new.pdf" in changed
+
+
+def test_append_uploaded_files_skips_non_pdf(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "keep.pdf").write_bytes(b"%PDF-1.1 keep")
+
+    _root, warnings, changed = append_uploaded_files(
+        [_FakeUpload("note.txt", b"not a pdf")],
+        assets,
+    )
+    assert any("PDF" in w for w in warnings)
+    assert not (assets / "note.txt").exists()
+    assert (assets / "keep.pdf").exists()
+    assert "note.txt" not in changed
 
 
 def test_append_uploaded_files_unpacks_zip(tmp_path: Path) -> None:
     assets = tmp_path / "assets"
     assets.mkdir()
-    (assets / "keep.txt").write_text("keep", encoding="utf-8")
+    (assets / "keep.pdf").write_bytes(b"%PDF-1.1 keep")
 
     archive = tmp_path / "pack.zip"
     with zipfile.ZipFile(archive, "w") as handle:
-        handle.writestr("docs/a.txt", "from-zip")
+        handle.writestr("docs/a.pdf", "%PDF-1.1 from-zip")
+        handle.writestr("docs/a.txt", "ignored")
 
     _root, warnings, changed = append_uploaded_files(
         [_FakeUpload("pack.zip", archive.read_bytes())],
         assets,
     )
-    assert not warnings
-    assert (assets / "keep.txt").exists()
-    assert (assets / "pack" / "docs" / "a.txt").is_file()
-    assert any(path.endswith("a.txt") for path in changed)
+    assert (assets / "keep.pdf").exists()
+    assert (assets / "pack" / "docs" / "a.pdf").is_file()
+    assert not (assets / "pack" / "docs" / "a.txt").exists()
+    assert any(path.endswith("a.pdf") for path in changed)
+    assert any("PDF" in w for w in warnings)
 
 
 def test_cleanup_old_uploads(tmp_path: Path, monkeypatch) -> None:
