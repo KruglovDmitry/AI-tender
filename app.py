@@ -12,7 +12,6 @@ from ai_tender.models import (
     PositionMatchStatus,
     get_settings,
 )
-from ai_tender.providers import build_llm
 from ai_tender.services.index_service import (
     get_assets_index_status,
     remove_asset_from_index,
@@ -606,17 +605,12 @@ with st.sidebar:
                     _, _, changed = append_uploaded_files(
                         list(assets_uploads), assets_root
                     )
-                    progress.progress(35, text="Классификация и индексация по типу…")
-                    llm = build_llm(settings)
+                    progress.progress(35, text="VL-индексация по страницам…")
                     results, _ = index_asset_files(
                         assets_root,
                         changed,
-                        llm,
                         cache_dir=settings.cache_dir,
-                        embedding_model=settings.embedding_model,
-                        embedding_device=settings.embedding_device,
-                        ocr_enabled=False,
-                        ocr_languages=settings.ocr_languages,
+                        settings=settings,
                     )
                     progress.progress(100, text="Готово")
                     indexed_n = sum(1 for r in results if r.status.value == "indexed")
@@ -626,12 +620,17 @@ with st.sidebar:
                         f"Обработано: {len(changed)} "
                         f"(индекс: {indexed_n}, пропущено: {skipped_n}, ошибок: {failed_n})"
                     )
+                    for result in results:
+                        if result.status.value == "failed" and result.message:
+                            print(f"[assets index] {result.message}", flush=True)
+                        for warning in result.details.get("warnings") or []:
+                            print(f"[assets index] {result.relative_path}: {warning}", flush=True)
                     st.session_state.pop("assets_type_messages", None)
                     st.session_state.assets_uploader_nonce += 1
                     st.session_state.pop("_assets_upload_fp", None)
                     st.rerun()
                 except Exception as exc:
-                    st.exception(exc)
+                    print(f"[assets index] exception: {exc}", flush=True)
 
         for warning in (status.get("warnings") or [])[-5:]:
             st.warning(warning)

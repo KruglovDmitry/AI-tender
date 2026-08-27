@@ -1,4 +1,4 @@
-"""Индексация эталонов по типу документа."""
+"""Постраничная VL-индексация эталонов (без классификации типа)."""
 
 from ...models import (
     DOCUMENT_KIND_LABELS,
@@ -7,17 +7,17 @@ from ...models import (
     IndexingResult,
     IndexingStatus,
 )
-from .classify import classify_document_kind
+from .base import AssetVlIndexer
 from .orchestrate import index_asset_files
 from .persistance import delete_product_artifacts
 
 __all__ = [
     "DOCUMENT_KIND_LABELS",
+    "AssetVlIndexer",
     "DocumentKind",
     "IndexingContext",
     "IndexingResult",
     "IndexingStatus",
-    "classify_document_kind",
     "delete_product_artifacts",
     "index_asset_files",
 ]

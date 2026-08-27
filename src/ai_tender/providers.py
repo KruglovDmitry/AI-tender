@@ -28,6 +28,80 @@ def _strip_llm_json_fence(content: str) -> str:
     return text
 
 
+def _extract_balanced_object(text: str, start: int) -> tuple[str | None, int]:
+    """Вырезает один JSON-объект {...} начиная с start. → (obj|None, end_index)."""
+    if start >= len(text) or text[start] != "{":
+        return None, start
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1], i + 1
+    return None, start
+
+
+def _salvage_partial_products_json(content: str) -> dict[str, Any] | None:
+    """Достаёт полные элементы products из обрезанного JSON ответа VL."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = (
+            text.removeprefix("```json")
+            .removeprefix("```")
+            .removesuffix("```")
+            .strip()
+        )
+    catalog = ""
+    catalog_match = re.search(
+        r'"catalog_name"\s*:\s*"((?:\\.|[^"\\])*)"', text
+    )
+    if catalog_match:
+        catalog = json.loads(f'"{catalog_match.group(1)}"')
+
+    products_match = re.search(r'"products"\s*:\s*\[', text)
+    if not products_match:
+        return None
+
+    products: list[Any] = []
+    i = products_match.end()
+    while i < len(text):
+        while i < len(text) and text[i] in " \t\r\n,":
+            i += 1
+        if i >= len(text) or text[i] == "]":
+            break
+        if text[i] != "{":
+            break
+        obj_text, end = _extract_balanced_object(text, i)
+        if obj_text is None:
+            break
+        try:
+            item = json.loads(_repair_json_text(obj_text))
+        except json.JSONDecodeError:
+            break
+        if isinstance(item, dict):
+            products.append(item)
+        i = end
+
+    if not products:
+        return None
+    return {"catalog_name": catalog, "products": products}
+
+
 def _repair_json_text(text: str) -> str:
     """Типичные починки ответов LLM: запятые, кавычки, управляющие символы."""
     repaired = (
@@ -59,6 +133,9 @@ def parse_llm_json(content: str) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValueError("Ответ LLM должен быть JSON-объектом")
         return data
+    salvaged = _salvage_partial_products_json(content)
+    if salvaged is not None:
+        return salvaged
     assert last_error is not None
     raise last_error
 
@@ -68,7 +145,7 @@ def try_parse_llm_json(content: str) -> dict[str, Any] | None:
     try:
         return parse_llm_json(content)
     except (json.JSONDecodeError, ValueError, TypeError):
-        return None
+        return _salvage_partial_products_json(content or "")
 
 
 def complete_llm_json(

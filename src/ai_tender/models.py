@@ -1,6 +1,7 @@
 from enum import StrEnum
 from pathlib import Path
 import operator
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
@@ -11,6 +12,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
+
+
+def _openai_compatible_base_url(url: str) -> str:
+    """Нормализует base URL для OpenAI SDK (…/v1)."""
+    cleaned = (url or "").strip().rstrip("/")
+    if not cleaned:
+        return cleaned
+    if cleaned.endswith("/v1"):
+        return cleaned
+    return f"{cleaned}/v1"
 
 
 class Evidence(BaseModel):
@@ -54,17 +65,19 @@ POSITION_STATUS_LABELS = {
 
 
 class DocumentKind(StrEnum):
-    """Тип эталонного документа для выбора индексатора."""
+    """Тип эталонного документа."""
 
     catalog = "catalog"
     product = "product"
     other = "other"
+    asset = "asset"  # постраничная VL-индексация без классификации
 
 
 DOCUMENT_KIND_LABELS: dict[DocumentKind, str] = {
     DocumentKind.catalog: "каталог",
     DocumentKind.product: "описание/паспорт продукта",
     DocumentKind.other: "прочее",
+    DocumentKind.asset: "эталон",
 }
 
 
@@ -90,7 +103,7 @@ class IndexingResult:
 
 @dataclass
 class IndexingContext:
-    """Контекст для индексатора (OCR, LLM и т.п.)."""
+    """Контекст для индексатора (VL, embeddings и т.п.)."""
 
     assets_path: Path
     cache_dir: Path | None = None
@@ -99,61 +112,14 @@ class IndexingContext:
     embedding_device: str | None = None
     ocr_enabled: bool = True
     ocr_languages: str = "rus+eng"
+    vl_base_url: str = "http://127.0.0.1:8000/v1"
+    vl_model: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
+    vl_api_key: str = "EMPTY"
+    vl_max_pages: int = 40
+    vl_image_scale: float = 1.5
+    vl_timeout_sec: float = 120.0
+    vl_max_output_tokens: int = 2000
     extra: dict[str, Any] = field(default_factory=dict)
-
-
-class AttributeType(StrEnum):
-    numeric_range = "numeric_range"
-    categorical = "categorical"
-    bool = "bool"
-    standard_ref = "standard_ref"
-    text = "text"
-
-
-# Фиксированный словарь канонических ключей атрибутов для LLM и поиска.
-CANONICAL_ATTRIBUTE_KEYS: tuple[str, ...] = (
-    "voltage",
-    "voltage_dc",
-    "power",
-    "power_apparent",
-    "frequency",
-    "current",
-    "capacity",
-    "ip_rating",
-    "temperature_min",
-    "temperature_max",
-    "dimensions",
-    "weight",
-    "efficiency",
-    "phase",
-    "form_factor",
-    "battery_type",
-    "runtime",
-    "interface",
-    "mounting",
-    "material",
-    "warranty",
-    "other",
-)
-
-
-class AttributeValueNorm(BaseModel):
-    """Нормализованное значение атрибута."""
-
-    num: float | None = None
-    num_max: float | None = None
-    unit: str | None = None
-    tol: float | None = None
-    text: str | None = None
-    bool_value: bool | None = None
-
-
-class ProductAttribute(BaseModel):
-    key_canonical: str = "other"
-    key_raw: str = ""
-    value_norm: AttributeValueNorm = Field(default_factory=AttributeValueNorm)
-    value_raw: str = ""
-    type: AttributeType = AttributeType.text
 
 
 class ProductSource(BaseModel):
@@ -173,7 +139,7 @@ class Product(BaseModel):
     canonical_desc: str = ""
     raw_chunk: str = ""
     source: ProductSource = Field(default_factory=ProductSource)
-    attributes: list[ProductAttribute] = Field(default_factory=list)
+    characteristics: list[str] = Field(default_factory=list)
     standards: list[str] = Field(default_factory=list)
 
 
@@ -247,6 +213,16 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_base_url: str = "https://api.openai.com/v1"
 
+    # Vision-LLM для постраничной индексации эталонов (OpenAI-compatible, напр. vLLM).
+    # Можно задать AI_TENDER_VL_* или LOCAL_LLM_* (см. get_settings).
+    vl_base_url: str = "http://127.0.0.1:8000/v1"
+    vl_model: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
+    vl_api_key: str = "EMPTY"
+    vl_max_pages: int = 40
+    vl_image_scale: float = 1.5
+    vl_timeout_sec: float = 120.0
+    vl_max_output_tokens: int = 2000
+
     # Retrieval / оценка
     top_k: int = 3
     chunk_size: int = 1024
@@ -277,7 +253,39 @@ class Settings(BaseSettings):
 
 
 def get_settings() -> Settings:
-    return Settings()
+    """Загружает Settings; LOCAL_LLM_* подставляются в VL, если AI_TENDER_VL_* не заданы."""
+    settings = Settings()
+    updates: dict[str, Any] = {}
+
+    if "AI_TENDER_VL_BASE_URL" not in os.environ:
+        local_url = os.getenv("LOCAL_LLM_BASE_URL")
+        if local_url:
+            updates["vl_base_url"] = _openai_compatible_base_url(local_url)
+    else:
+        updates["vl_base_url"] = _openai_compatible_base_url(settings.vl_base_url)
+
+    if "AI_TENDER_VL_MODEL" not in os.environ:
+        local_model = os.getenv("LOCAL_LLM_DEFAULT_MODEL")
+        if local_model:
+            updates["vl_model"] = local_model.strip()
+
+    if "AI_TENDER_VL_TIMEOUT_SEC" not in os.environ:
+        local_timeout = os.getenv("LOCAL_LLM_TIMEOUT_SEC")
+        if local_timeout:
+            try:
+                updates["vl_timeout_sec"] = float(local_timeout)
+            except ValueError:
+                pass
+
+    if "AI_TENDER_VL_MAX_OUTPUT_TOKENS" not in os.environ:
+        local_max = os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS")
+        if local_max:
+            try:
+                updates["vl_max_output_tokens"] = int(local_max)
+            except ValueError:
+                pass
+
+    return settings.model_copy(update=updates) if updates else settings
 
 
 ProgressCallback = Callable[[str, float], None]

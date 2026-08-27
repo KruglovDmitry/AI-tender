@@ -1,25 +1,21 @@
-"""Базовый индексатор документов эталонов."""
+"""Постраничная VL-индексация эталонов (без классификации типа)."""
 
 from __future__ import annotations
-import fitz
+
 import hashlib
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+import fitz
 import numpy as np
 
 from ...models import (
-    CANONICAL_ATTRIBUTE_KEYS,
     DOCUMENT_KIND_LABELS,
-    AttributeType,
-    AttributeValueNorm,
     DocumentKind,
     IndexingContext,
     IndexingResult,
     IndexingStatus,
     Product,
-    ProductAttribute,
     ProductDocumentIndex,
     ProductSource,
 )
@@ -28,89 +24,62 @@ from .persistance import (
     save_product_embeddings,
     save_product_index,
 )
-
-_KEYS_LIST = ", ".join(CANONICAL_ATTRIBUTE_KEYS)
+from .vl_client import complete_vl_json
 
 PRODUCT_SCHEMA_HINT = (
-    '{"products":[{"id":"","model":"","manufacturer":"","category":"",'
-    '"canonical_desc":"","raw_chunk":"","attributes":[{"key_canonical":"voltage",'
-    '"key_raw":"","value_norm":{"num":220,"unit":"V","tol":null},"value_raw":"",'
-    '"type":"numeric_range|categorical|bool|standard_ref|text"}],'
-    '"standards":["ГОСТ …"]}],"catalog_name":""}'
+    '{"catalog_name":"","products":[{"model":"","manufacturer":"","category":"",'
+    '"canonical_desc":"","raw_chunk":"","characteristics":[""],"standards":[]}]}'
 )
 
-ATTR_RULES = f"""\
-Атрибуты:
-- key_canonical — ТОЛЬКО из списка: {_KEYS_LIST}
-- key_raw — как в документе
-- value_raw — исходная строка
-- value_norm: num/num_max/unit/tol для чисел; text для категорий; bool_value для bool
-- type: numeric_range | categorical | bool | standard_ref | text
+PAGE_EXTRACT_PROMPT = """\
+Извлеки продукты и их характеристики со страницы технического документа (изображение).
+Если на странице нет продуктов/моделей/артикулов — верни пустой массив products.
 
-canonical_desc — 1–3 предложения на русском: модель, назначение, ключевые параметры
-(для семантического поиска). Без воды.
-raw_chunk — короткий исходный фрагмент (строка таблицы / абзац), не весь документ.
+Верни ТОЛЬКО JSON:
+{{
+  "catalog_name": "название каталога/документа, если видно, иначе пустая строка",
+  "products": []
+}}
+
+Поля Product: model, manufacturer, category, canonical_desc, raw_chunk,
+characteristics[], standards[]. Поле id не заполняй.
+
+Правила границ продукта (важно):
+- Каждый отдельный тип изделия, модуль, артикул или строка таблицы = отдельный product.
+- Если на странице есть и базовая станция/платформа/серия, и её модули/варианты —
+  заведи ОТДЕЛЬНЫЙ product на саму станцию/платформу/серию И отдельные products
+  на каждую входящую позицию. Не оставляй только модули и не сливай всё в один.
+- Не дублируй один и тот же product. Различающиеся варианты — отдельные model.
+- model должен однозначно отличать позицию на странице.
+
+characteristics — массив строк: основные характеристики КАК В ТЕКСТЕ документа
+(короткие фразы/значения со страницы). Без ключей, без нормализации, без выдумок.
+Пустой массив, если характеристик нет.
+
+canonical_desc — 1–2 предложения: что это. Без воды.
+raw_chunk — короткий исходный фрагмент (заголовок блока / строка таблицы).
+
+ИСТОЧНИК: {filename}
+СТРАНИЦА: {page}
+НАЗВАНИЕ ДОКУМЕНТА (если уже известно): {catalog_name}
 """
 
 
-class StructuredDocumentIndexer(ABC):
-    """Каталог/паспорт: extract → JSON + embeddings → IndexingResult."""
+class AssetVlIndexer:
+    """PDF → страница за страницей в VL → JSON продуктов + embeddings."""
 
-    kind: DocumentKind
-    max_pages: int = 10
-    page_max_chars: int = 8_000
+    kind = DocumentKind.asset
 
-    @staticmethod
-    def stable_id(source_file: str, page: int | None, model: str, idx: int) -> str:
-        raw = f"{source_file}|{page or 0}|{model.strip().lower()}|{idx}"
-        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    def as_float(value: Any) -> float | None:
-        if value is None or value == "":
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def as_int(value: Any) -> int | None:
-        if value is None or value == "":
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def as_bbox(value: Any) -> list[float] | None:
-        if not isinstance(value, (list, tuple)) or len(value) < 4:
-            return None
-        try:
-            return [float(x) for x in value[:4]]
-        except (TypeError, ValueError):
-            return None
-
-    @abstractmethod
-    def extract(self, relative_path: str, context: IndexingContext,) -> tuple[ProductDocumentIndex, list[str]]:
-        """Извлечь продукты из файла (специфика типа документа)."""
-
-    @abstractmethod
-    def success_message(self, name: str, label: str, doc_index: ProductDocumentIndex, product_count: int,) -> str:
-        """Сообщение для UI после extract/persist."""
-
-    def index(self, path: Path, *, relative_path: str, context: IndexingContext,) -> IndexingResult:
+    def index(
+        self,
+        path: Path,
+        *,
+        relative_path: str,
+        context: IndexingContext,
+    ) -> IndexingResult:
         del path
         label = DOCUMENT_KIND_LABELS[self.kind]
         name = Path(relative_path).name
-        if context.llm is None:
-            return IndexingResult(
-                relative_path=relative_path,
-                doc_kind=self.kind,
-                status=IndexingStatus.failed,
-                message=f"«{name}»: нет LLM для индексации",
-            )
         if context.cache_dir is None:
             return IndexingResult(
                 relative_path=relative_path,
@@ -121,77 +90,147 @@ class StructuredDocumentIndexer(ABC):
 
         try:
             doc_index, warnings = self.extract(relative_path, context)
-            persist_warnings = self.persist(doc_index, context)
-            warnings.extend(persist_warnings)
+            warnings.extend(self.persist(doc_index, context))
         except Exception as exc:
             return IndexingResult(
                 relative_path=relative_path,
                 doc_kind=self.kind,
                 status=IndexingStatus.failed,
-                message=f"Тип «{label}»: ошибка индексации «{name}»: {exc}",
+                message=f"«{label}»: ошибка индексации «{name}»: {exc}",
             )
 
-        return self.build_result(relative_path, doc_index, warnings)
-
-    def read_document_pages(self, relative_path: str, context: IndexingContext, *, max_pages: int | None = None, max_chars_per_page: int | None = None,) -> tuple[list[tuple[int, str]], list[str]]:      
-        if max_pages is None:
-            max_pages = self.max_pages
-        if max_chars_per_page is None:
-            max_chars_per_page = self.page_max_chars
-        assets_path = context.assets_path.expanduser().resolve()
-        rel = relative_path.replace("\\", "/").lstrip("/")
-        path = assets_path / rel
-        if not path.is_file():
-            return [], [f"Файл не найден: {rel}"]
-        if path.suffix.lower() != ".pdf":
-            return [], [
-                f"Эталоны индексируются только из PDF "
-                f"(получен {path.suffix or 'без расширения'}): {rel}"
-            ]
-
-        warnings: list[str] = []
-        try:
-            doc = fitz.open(path)
-        except Exception as exc:
-            return [], [f"Не удалось открыть PDF {path.name}: {exc}"]
-        try:
-            n = min(max_pages, doc.page_count)
-            pages: list[tuple[int, str]] = []
-            for i in range(n):
-                raw = doc.load_page(i).get_text() or ""
-                text = raw.strip()
-                if len(text) > max_chars_per_page:
-                    text = text[:max_chars_per_page]
-                    warnings.append(
-                        f"Стр. {i + 1} обрезана до {max_chars_per_page} символов: "
-                        f"{path.name}"
-                    )
-                pages.append((i + 1, text))
-        finally:
-            doc.close()
-        return pages, warnings
-
-    def build_result(self, relative_path: str, doc_index: ProductDocumentIndex, warnings: list[str],) -> IndexingResult:
-        label = DOCUMENT_KIND_LABELS[self.kind]
-        name = Path(relative_path).name
         n = len(doc_index.products)
         status = IndexingStatus.indexed if n else IndexingStatus.failed
-        message = self.success_message(name, label, doc_index, n)
-        details: dict[str, Any] = {"product_count": n, "warnings": warnings}
+        msg = (
+            f"«{name}» — {n} продукт(ов) (VL, постранично)"
+            if n
+            else f"«{name}» — продукты не извлечены"
+        )
         if doc_index.catalog_name:
-            details["catalog_name"] = doc_index.catalog_name
+            msg += f", документ «{doc_index.catalog_name}»"
         return IndexingResult(
             relative_path=relative_path,
             doc_kind=self.kind,
             status=status,
-            message=message,
-            details=details,
+            message=msg,
+            details={
+                "product_count": n,
+                "catalog_name": doc_index.catalog_name,
+                "warnings": warnings,
+            },
         )
 
-    def persist(self, index: ProductDocumentIndex, context: IndexingContext,) -> list[str]:
+    def extract(
+        self,
+        relative_path: str,
+        context: IndexingContext,
+    ) -> tuple[ProductDocumentIndex, list[str]]:
+        rel = relative_path.replace("\\", "/").lstrip("/")
+        path = context.assets_path.expanduser().resolve() / rel
+        warnings: list[str] = []
+        if not path.is_file():
+            return (
+                ProductDocumentIndex(
+                    source_file=rel, doc_kind=self.kind, products=[]
+                ),
+                [f"Файл не найден: {rel}"],
+            )
+        if path.suffix.lower() != ".pdf":
+            return (
+                ProductDocumentIndex(
+                    source_file=rel, doc_kind=self.kind, products=[]
+                ),
+                [f"Ожидается PDF: {rel}"],
+            )
+
+        filename = Path(rel).name
+        catalog_name = ""
+        products: list[Product] = []
+        empty_pages = 0
+
+        try:
+            doc = fitz.open(path)
+        except Exception as exc:
+            return (
+                ProductDocumentIndex(
+                    source_file=rel, doc_kind=self.kind, products=[]
+                ),
+                [f"Не удалось открыть PDF {filename}: {exc}"],
+            )
+
+        try:
+            n_pages = min(context.vl_max_pages, doc.page_count)
+            scale = max(0.5, float(context.vl_image_scale))
+            matrix = fitz.Matrix(scale, scale)
+            vl_call = context.extra.get("vl_complete") or complete_vl_json
+
+            for i in range(n_pages):
+                page_num = i + 1
+                try:
+                    pix = doc.load_page(i).get_pixmap(matrix=matrix, alpha=False)
+                    image_bytes = pix.tobytes("jpeg")
+                    prompt = PAGE_EXTRACT_PROMPT.format(
+                        filename=filename,
+                        page=page_num,
+                        catalog_name=catalog_name or "(ещё не известно)",
+                    )
+                    data, _ = vl_call(
+                        image_bytes=image_bytes,
+                        prompt=prompt,
+                        base_url=context.vl_base_url,
+                        model=context.vl_model,
+                        api_key=context.vl_api_key,
+                        image_mime="image/jpeg",
+                        max_tokens=context.vl_max_output_tokens,
+                        timeout_sec=context.vl_timeout_sec,
+                        structure_hint=PRODUCT_SCHEMA_HINT,
+                    )
+                except Exception as exc:
+                    warnings.append(f"стр. {page_num}: {exc}")
+                    empty_pages += 1
+                    continue
+                if data is None:
+                    warnings.append(f"стр. {page_num}: VL JSON не разобран")
+                    empty_pages += 1
+                    continue
+                page_name, page_products = self.parse_products_payload(
+                    data, source_file=rel, page=page_num
+                )
+                if page_name and not catalog_name:
+                    catalog_name = page_name
+                if not page_products:
+                    empty_pages += 1
+                    continue
+                products.extend(page_products)
+        finally:
+            doc.close()
+
+        if empty_pages and not products:
+            warnings.append(
+                f"На обработанных страницах «{rel}» продукты не найдены"
+            )
+        if not catalog_name:
+            catalog_name = filename
+
+        return (
+            ProductDocumentIndex(
+                source_file=rel,
+                doc_kind=self.kind,
+                catalog_name=catalog_name,
+                products=products,
+                warnings=list(warnings),
+            ),
+            warnings,
+        )
+
+    def persist(
+        self,
+        index: ProductDocumentIndex,
+        context: IndexingContext,
+    ) -> list[str]:
         warnings: list[str] = []
         if context.cache_dir is None:
-            raise ValueError("IndexingContext.cache_dir обязателен для сохранения индекса")
+            raise ValueError("IndexingContext.cache_dir обязателен")
 
         delete_product_artifacts(context.cache_dir, index.source_file)
         index.embedding_model = context.embedding_model
@@ -214,12 +253,14 @@ class StructuredDocumentIndexer(ABC):
         )
         return warnings
 
-    def embed_texts(self, texts: list[str], context: IndexingContext) -> np.ndarray:     
+    def embed_texts(self, texts: list[str], context: IndexingContext) -> np.ndarray:
         embedder = context.extra.get("embed_model")
         if embedder is None:
             from ..index_service import configure_embeddings
-            embedder = configure_embeddings(context.embedding_model, context.embedding_device)
 
+            embedder = configure_embeddings(
+                context.embedding_model, context.embedding_device
+            )
         if hasattr(embedder, "get_text_embedding_batch"):
             vectors = embedder.get_text_embedding_batch(texts)
         else:
@@ -265,14 +306,9 @@ class StructuredDocumentIndexer(ABC):
         canonical = str(raw.get("canonical_desc") or "").strip()
         if not model and not canonical:
             return None
-        attrs_raw = raw.get("attributes") or []
-        attributes: list[ProductAttribute] = []
-        if isinstance(attrs_raw, list):
-            for item in attrs_raw:
-                if isinstance(item, dict):
-                    attr = self.coerce_attr(item)
-                    if attr:
-                        attributes.append(attr)
+        characteristics = self.coerce_characteristics(
+            raw.get("characteristics") or raw.get("attributes")
+        )
         standards_raw = raw.get("standards") or []
         standards = (
             [str(s).strip() for s in standards_raw if str(s).strip()]
@@ -280,7 +316,8 @@ class StructuredDocumentIndexer(ABC):
             else []
         )
         src = raw.get("source") if isinstance(raw.get("source"), dict) else {}
-        product_id = str(raw.get("id") or "").strip() or self.stable_id(
+        # id всегда стабильный у нас: LLM часто ставит один id на семейство (дубли).
+        product_id = self.stable_id(
             source_file, page, model or canonical, idx
         )
         return Product(
@@ -297,41 +334,59 @@ class StructuredDocumentIndexer(ABC):
                 page=page if page is not None else self.as_int(src.get("page")),
                 bbox=self.as_bbox(src.get("bbox")),
             ),
-            attributes=attributes,
+            characteristics=characteristics,
             standards=standards,
         )
 
-    def coerce_attr(self, raw: dict[str, Any]) -> ProductAttribute | None:
-        key = str(raw.get("key_canonical") or "other").strip().lower()
-        if key not in CANONICAL_ATTRIBUTE_KEYS:
-            key = "other"
-        type_raw = str(raw.get("type") or "text").strip().lower()
+    def coerce_characteristics(self, raw: Any) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                text = item.strip()
+            elif isinstance(item, dict):
+                # совместимость со старым форматом attributes
+                parts = [
+                    str(item.get("key") or item.get("key_canonical") or "").strip(),
+                    str(item.get("value") or item.get("value_raw") or "").strip(),
+                    str(item.get("unit") or "").strip(),
+                ]
+                text = " ".join(p for p in parts if p).strip()
+            else:
+                text = str(item).strip() if item is not None else ""
+            if text:
+                out.append(text)
+        return out
+
+    @staticmethod
+    def stable_id(source_file: str, page: int | None, model: str, idx: int) -> str:
+        raw = f"{source_file}|{page or 0}|{model.strip().lower()}|{idx}"
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def as_float(value: Any) -> float | None:
+        if value is None or value == "":
+            return None
         try:
-            attr_type = AttributeType(type_raw)
-        except ValueError:
-            attr_type = AttributeType.text
-        vn = raw.get("value_norm") or {}
-        if not isinstance(vn, dict):
-            vn = {}
-        return ProductAttribute(
-            key_canonical=key,
-            key_raw=str(raw.get("key_raw") or "").strip(),
-            value_raw=str(raw.get("value_raw") or "").strip(),
-            type=attr_type,
-            value_norm=AttributeValueNorm(
-                num=self.as_float(vn.get("num")),
-                num_max=self.as_float(vn.get("num_max")),
-                unit=(
-                    str(vn["unit"]).strip() if vn.get("unit") is not None else None
-                ),
-                tol=self.as_float(vn.get("tol")),
-                text=(
-                    str(vn["text"]).strip() if vn.get("text") is not None else None
-                ),
-                bool_value=(
-                    vn.get("bool_value")
-                    if isinstance(vn.get("bool_value"), bool)
-                    else None
-                ),
-            ),
-        )
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def as_int(value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def as_bbox(value: Any) -> list[float] | None:
+        if not isinstance(value, (list, tuple)) or len(value) < 4:
+            return None
+        try:
+            return [float(x) for x in value[:4]]
+        except (TypeError, ValueError):
+            return None
