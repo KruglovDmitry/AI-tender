@@ -150,6 +150,8 @@ class ProductDocumentIndex(BaseModel):
     doc_kind: DocumentKind
     catalog_name: str = ""
     products: list[Product] = Field(default_factory=list)
+    # Страницы, на которых VL нашёл описание продукции (после скана).
+    product_pages: list[int] = Field(default_factory=list)
     embedding_model: str = ""
     warnings: list[str] = Field(default_factory=list)
 

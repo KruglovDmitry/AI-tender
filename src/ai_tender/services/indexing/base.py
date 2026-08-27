@@ -1,4 +1,4 @@
-"""Постраничная VL-индексация эталонов (без классификации типа)."""
+"""Постраничная VL-индексация эталонов (скан → слияние с контекстом)."""
 
 from __future__ import annotations
 
@@ -26,47 +26,76 @@ from .persistance import (
 )
 from .vl_client import complete_vl_json
 
-PRODUCT_SCHEMA_HINT = (
-    '{"catalog_name":"","products":[{"model":"","manufacturer":"","category":"",'
-    '"canonical_desc":"","raw_chunk":"","characteristics":[""],"standards":[]}]}'
+PAGE_SCAN_SCHEMA_HINT = '{"summary":"","has_products":true}'
+
+PAGE_MERGE_SCHEMA_HINT = (
+    '{"catalog_name":"","update":false,'
+    '"products_add":[{"model":"","manufacturer":"","category":"",'
+    '"canonical_desc":"","raw_chunk":"","characteristics":[""],"standards":[]}],'
+    '"products_patch":[{"match_model":"","canonical_desc":"",'
+    '"characteristics_add":[""],"standards_add":[]}]}'
 )
 
-PAGE_EXTRACT_PROMPT = """\
-Извлеки продукты и их характеристики со страницы технического документа (изображение).
-Если на странице нет продуктов/моделей/артикулов — верни пустой массив products.
+PAGE_SCAN_PROMPT = """\
+ПРОХОД_СКАНИРОВАНИЯ страницы PDF.
+Кратко опиши содержание (1–2 предложения) и реши, похоже ли, что на странице
+есть данные по продукции.
 
 Верни ТОЛЬКО JSON:
 {{
-  "catalog_name": "название каталога/документа, если видно, иначе пустая строка",
-  "products": []
+  "summary": "краткое описание страницы",
+  "has_products": true
 }}
 
-Поля Product: model, manufacturer, category, canonical_desc, raw_chunk,
-characteristics[], standards[]. Поле id не заполняй.
-
-Правила границ продукта (важно):
-- Каждый отдельный тип изделия, модуль, артикул или строка таблицы = отдельный product.
-- Если на странице есть и базовая станция/платформа/серия, и её модули/варианты —
-  заведи ОТДЕЛЬНЫЙ product на саму станцию/платформу/серию И отдельные products
-  на каждую входящую позицию. Не оставляй только модули и не сливай всё в один.
-- Не дублируй один и тот же product. Различающиеся варианты — отдельные model.
-- model должен однозначно отличать позицию на странице.
-
-characteristics — массив строк: основные характеристики КАК В ТЕКСТЕ документа
-(короткие фразы/значения со страницы). Без ключей, без нормализации, без выдумок.
-Пустой массив, если характеристик нет.
-
-canonical_desc — 1–2 предложения: что это. Без воды.
-raw_chunk — короткий исходный фрагмент (заголовок блока / строка таблицы).
+has_products — ориентир для лога (true/false). На втором проходе все страницы
+всё равно будут просмотрены с накопленным контекстом.
 
 ИСТОЧНИК: {filename}
 СТРАНИЦА: {page}
-НАЗВАНИЕ ДОКУМЕНТА (если уже известно): {catalog_name}
+"""
+
+PAGE_MERGE_PROMPT = """\
+ПРОХОД_СЛИЯНИЯ: проанализируй ТЕКУЩУЮ страницу с учётом контекста каталога.
+Если на странице нет полезных данных по продуктам — ничего не меняй.
+
+Верни ТОЛЬКО JSON:
+{{
+  "catalog_name": "название документа если видно, иначе пустая строка",
+  "update": false,
+  "products_add": [],
+  "products_patch": []
+}}
+
+Правила:
+- update=false и пустые массивы, если страница не добавляет важных данных.
+- update=true, если нужно добавить новые продукты или дополнить уже известные.
+- products_add — только НОВЫЕ позиции, которых ещё нет в KNOWN PRODUCTS.
+- products_patch — дополнение уже известных (match_model = точное model из списка).
+  В patch можно передать: canonical_desc (если лучше/подробнее), manufacturer,
+  category, raw_chunk, characteristics_add[], standards_add[].
+  Не повторяй уже известные характеристики.
+- Каждый отдельный тип изделия/модуль/артикул = отдельный product.
+- Серия/платформа и её модули — разные products.
+- Поле id не заполняй.
+
+Поля нового product: model, manufacturer, category, canonical_desc, raw_chunk,
+characteristics[], standards[].
+characteristics — фразы КАК В ТЕКСТЕ, без выдумок.
+
+ИСТОЧНИК: {filename}
+ТЕКУЩАЯ СТРАНИЦА: {page}
+НАЗВАНИЕ ДОКУМЕНТА: {catalog_name}
+
+ОПИСАНИЯ СТРАНИЦ (скан):
+{page_summaries}
+
+KNOWN PRODUCTS:
+{known_products}
 """
 
 
 class AssetVlIndexer:
-    """PDF → страница за страницей в VL → JSON продуктов + embeddings."""
+    """PDF → скан страниц → постраничное слияние продуктов с контекстом."""
 
     kind = DocumentKind.asset
 
@@ -102,12 +131,14 @@ class AssetVlIndexer:
         n = len(doc_index.products)
         status = IndexingStatus.indexed if n else IndexingStatus.failed
         msg = (
-            f"«{name}» — {n} продукт(ов) (VL, постранично)"
+            f"«{name}» — {n} продукт(ов) (VL, слияние по страницам)"
             if n
             else f"«{name}» — продукты не извлечены"
         )
         if doc_index.catalog_name:
             msg += f", документ «{doc_index.catalog_name}»"
+        if doc_index.product_pages:
+            msg += f", страницы с изменениями: {doc_index.product_pages}"
         return IndexingResult(
             relative_path=relative_path,
             doc_kind=self.kind,
@@ -116,6 +147,7 @@ class AssetVlIndexer:
             details={
                 "product_count": n,
                 "catalog_name": doc_index.catalog_name,
+                "product_pages": list(doc_index.product_pages),
                 "warnings": warnings,
             },
         )
@@ -146,7 +178,7 @@ class AssetVlIndexer:
         filename = Path(rel).name
         catalog_name = ""
         products: list[Product] = []
-        empty_pages = 0
+        touched_pages: list[int] = []
 
         try:
             doc = fitz.open(path)
@@ -164,15 +196,75 @@ class AssetVlIndexer:
             matrix = fitz.Matrix(scale, scale)
             vl_call = context.extra.get("vl_complete") or complete_vl_json
 
+            # --- Проход 1: краткие описания всех страниц ---
+            scan_rows: list[dict[str, Any]] = []
             for i in range(n_pages):
                 page_num = i + 1
                 try:
                     pix = doc.load_page(i).get_pixmap(matrix=matrix, alpha=False)
                     image_bytes = pix.tobytes("jpeg")
-                    prompt = PAGE_EXTRACT_PROMPT.format(
+                    scan_data, _ = vl_call(
+                        image_bytes=image_bytes,
+                        prompt=PAGE_SCAN_PROMPT.format(
+                            filename=filename, page=page_num
+                        ),
+                        base_url=context.vl_base_url,
+                        model=context.vl_model,
+                        api_key=context.vl_api_key,
+                        image_mime="image/jpeg",
+                        max_tokens=min(256, context.vl_max_output_tokens),
+                        timeout_sec=context.vl_timeout_sec,
+                        structure_hint=PAGE_SCAN_SCHEMA_HINT,
+                    )
+                except Exception as exc:
+                    warnings.append(f"скан стр. {page_num}: {exc}")
+                    scan_rows.append(
+                        {"page": page_num, "summary": "", "has_products": True}
+                    )
+                    continue
+
+                summary, has_products = self.parse_scan_payload(scan_data)
+                if scan_data is None:
+                    warnings.append(f"скан стр. {page_num}: VL JSON не разобран")
+                    has_products = True
+                scan_rows.append(
+                    {
+                        "page": page_num,
+                        "summary": summary,
+                        "has_products": has_products,
+                    }
+                )
+
+            scan_hint_pages = [
+                int(row["page"]) for row in scan_rows if row.get("has_products")
+            ]
+            print(
+                f"[assets index] {rel}: scan_hint_pages={scan_hint_pages}",
+                flush=True,
+            )
+            for row in scan_rows:
+                print(
+                    f"[assets index] {rel}: scan p{row['page']} "
+                    f"has_products={row['has_products']} "
+                    f"summary={row.get('summary')!r}",
+                    flush=True,
+                )
+            warnings.append(f"scan_hint_pages={scan_hint_pages}")
+
+            page_summaries_text = self.format_page_summaries(scan_rows)
+
+            # --- Проход 2: все страницы + контекст, merge ---
+            for i in range(n_pages):
+                page_num = i + 1
+                try:
+                    pix = doc.load_page(i).get_pixmap(matrix=matrix, alpha=False)
+                    image_bytes = pix.tobytes("jpeg")
+                    prompt = PAGE_MERGE_PROMPT.format(
                         filename=filename,
                         page=page_num,
                         catalog_name=catalog_name or "(ещё не известно)",
+                        page_summaries=page_summaries_text,
+                        known_products=self.format_known_products(products),
                     )
                     data, _ = vl_call(
                         image_bytes=image_bytes,
@@ -183,29 +275,33 @@ class AssetVlIndexer:
                         image_mime="image/jpeg",
                         max_tokens=context.vl_max_output_tokens,
                         timeout_sec=context.vl_timeout_sec,
-                        structure_hint=PRODUCT_SCHEMA_HINT,
+                        structure_hint=PAGE_MERGE_SCHEMA_HINT,
                     )
                 except Exception as exc:
                     warnings.append(f"стр. {page_num}: {exc}")
-                    empty_pages += 1
                     continue
                 if data is None:
                     warnings.append(f"стр. {page_num}: VL JSON не разобран")
-                    empty_pages += 1
                     continue
-                page_name, page_products = self.parse_products_payload(
-                    data, source_file=rel, page=page_num
+
+                changed, catalog_name = self.apply_page_merge(
+                    data,
+                    products=products,
+                    catalog_name=catalog_name,
+                    source_file=rel,
+                    page=page_num,
                 )
-                if page_name and not catalog_name:
-                    catalog_name = page_name
-                if not page_products:
-                    empty_pages += 1
-                    continue
-                products.extend(page_products)
+                if changed:
+                    touched_pages.append(page_num)
+                    print(
+                        f"[assets index] {rel}: merge p{page_num} "
+                        f"products={len(products)}",
+                        flush=True,
+                    )
         finally:
             doc.close()
 
-        if empty_pages and not products:
+        if not products:
             warnings.append(
                 f"На обработанных страницах «{rel}» продукты не найдены"
             )
@@ -218,6 +314,7 @@ class AssetVlIndexer:
                 doc_kind=self.kind,
                 catalog_name=catalog_name,
                 products=products,
+                product_pages=touched_pages,
                 warnings=list(warnings),
             ),
             warnings,
@@ -270,29 +367,200 @@ class AssetVlIndexer:
             arr = arr.reshape(1, -1)
         return arr
 
-    def parse_products_payload(
-        self,
-        data: dict[str, Any] | None,
-        *,
-        source_file: str,
-        page: int | None,
-    ) -> tuple[str, list[Product]]:
+    def parse_scan_payload(
+        self, data: dict[str, Any] | None
+    ) -> tuple[str, bool]:
+        """→ (summary, has_products)."""
         if not data:
-            return "", []
-        catalog_name = str(data.get("catalog_name") or "").strip()
-        raw_list = data.get("products") or []
-        if not isinstance(raw_list, list):
-            return catalog_name, []
-        products: list[Product] = []
-        for idx, item in enumerate(raw_list):
+            return "", False
+        summary = str(data.get("summary") or "").strip()
+        raw_flag = data.get("has_products")
+        if isinstance(raw_flag, bool):
+            has_products = raw_flag
+        elif isinstance(raw_flag, (int, float)):
+            has_products = bool(raw_flag)
+        elif isinstance(raw_flag, str):
+            has_products = raw_flag.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "да",
+            }
+        else:
+            has_products = False
+        return summary, has_products
+
+    def apply_page_merge(
+        self,
+        data: dict[str, Any],
+        *,
+        products: list[Product],
+        catalog_name: str,
+        source_file: str,
+        page: int,
+    ) -> tuple[bool, str]:
+        """Применяет add/patch со страницы. → (changed, catalog_name)."""
+        name = str(data.get("catalog_name") or "").strip()
+        if name and not catalog_name:
+            catalog_name = name
+
+        update_flag = data.get("update")
+        if isinstance(update_flag, str):
+            do_update = update_flag.strip().lower() in {"1", "true", "yes", "да"}
+        else:
+            do_update = bool(update_flag)
+
+        adds = data.get("products_add") or []
+        patches = data.get("products_patch") or []
+        if not isinstance(adds, list):
+            adds = []
+        if not isinstance(patches, list):
+            patches = []
+
+        # Совместимость: старый формат {"products": [...]} без update.
+        legacy = data.get("products")
+        if isinstance(legacy, list) and legacy and not adds and not patches:
+            do_update = True
+            adds = legacy
+
+        if not do_update and not adds and not patches:
+            return False, catalog_name
+
+        changed = False
+        by_model = {p.model.strip().lower(): p for p in products if p.model.strip()}
+
+        for item in patches:
             if not isinstance(item, dict):
                 continue
+            if self.patch_product(item, products=products, by_model=by_model):
+                changed = True
+
+        for idx, item in enumerate(adds):
+            if not isinstance(item, dict):
+                continue
+            model = str(item.get("model") or "").strip()
+            key = model.lower()
+            if key and key in by_model:
+                # уже есть — как patch
+                patch = {
+                    "match_model": model,
+                    "canonical_desc": item.get("canonical_desc"),
+                    "manufacturer": item.get("manufacturer"),
+                    "category": item.get("category"),
+                    "raw_chunk": item.get("raw_chunk"),
+                    "characteristics_add": item.get("characteristics")
+                    or item.get("characteristics_add"),
+                    "standards_add": item.get("standards")
+                    or item.get("standards_add"),
+                }
+                if self.patch_product(patch, products=products, by_model=by_model):
+                    changed = True
+                continue
             product = self.coerce_product(
-                item, source_file=source_file, page=page, idx=idx
+                item,
+                source_file=source_file,
+                page=page,
+                idx=len(products) + idx,
             )
-            if product:
-                products.append(product)
-        return catalog_name, products
+            if product is None:
+                continue
+            products.append(product)
+            if product.model.strip():
+                by_model[product.model.strip().lower()] = product
+            changed = True
+
+        return changed, catalog_name
+
+    def patch_product(
+        self,
+        patch: dict[str, Any],
+        *,
+        products: list[Product],
+        by_model: dict[str, Product],
+    ) -> bool:
+        match = str(
+            patch.get("match_model") or patch.get("model") or ""
+        ).strip()
+        if not match:
+            return False
+        product = by_model.get(match.lower())
+        if product is None:
+            # частичное совпадение по началу model
+            for key, candidate in by_model.items():
+                if key.startswith(match.lower()) or match.lower().startswith(key):
+                    product = candidate
+                    break
+        if product is None:
+            return False
+
+        changed = False
+        desc = str(patch.get("canonical_desc") or "").strip()
+        if desc and desc != product.canonical_desc:
+            if len(desc) >= len(product.canonical_desc):
+                product.canonical_desc = desc
+                changed = True
+        manufacturer = str(patch.get("manufacturer") or "").strip()
+        if manufacturer and not product.manufacturer:
+            product.manufacturer = manufacturer
+            changed = True
+        category = str(patch.get("category") or "").strip()
+        if category and not product.category:
+            product.category = category
+            changed = True
+        raw_chunk = str(patch.get("raw_chunk") or "").strip()
+        if raw_chunk and not product.raw_chunk:
+            product.raw_chunk = raw_chunk
+            changed = True
+
+        chars_add = self.coerce_characteristics(
+            patch.get("characteristics_add") or patch.get("characteristics")
+        )
+        if chars_add:
+            existing = {c.lower() for c in product.characteristics}
+            for item in chars_add:
+                if item.lower() not in existing:
+                    product.characteristics.append(item)
+                    existing.add(item.lower())
+                    changed = True
+
+        standards_raw = patch.get("standards_add") or patch.get("standards") or []
+        if isinstance(standards_raw, list):
+            existing_std = {s.lower() for s in product.standards}
+            for item in standards_raw:
+                text = str(item).strip()
+                if text and text.lower() not in existing_std:
+                    product.standards.append(text)
+                    existing_std.add(text.lower())
+                    changed = True
+
+        del products  # list mutated in place via product refs
+        return changed
+
+    def format_page_summaries(self, scan_rows: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for row in scan_rows:
+            summary = str(row.get("summary") or "").strip() or "(нет описания)"
+            lines.append(f"- стр. {row.get('page')}: {summary}")
+        return "\n".join(lines) if lines else "(пусто)"
+
+    def format_known_products(self, products: list[Product]) -> str:
+        if not products:
+            return "(пока пусто)"
+        lines: list[str] = []
+        for product in products:
+            chars = "; ".join(product.characteristics[:8])
+            if len(product.characteristics) > 8:
+                chars += "; …"
+            desc = (product.canonical_desc or "")[:220]
+            lines.append(
+                f"- model={product.model!r} | category={product.category!r} | "
+                f"desc={desc!r} | characteristics=[{chars}]"
+            )
+        # ограничим размер контекста
+        text = "\n".join(lines)
+        if len(text) > 12000:
+            text = text[:12000] + "\n…"
+        return text
 
     def coerce_product(
         self,
@@ -316,7 +584,6 @@ class AssetVlIndexer:
             else []
         )
         src = raw.get("source") if isinstance(raw.get("source"), dict) else {}
-        # id всегда стабильный у нас: LLM часто ставит один id на семейство (дубли).
         product_id = self.stable_id(
             source_file, page, model or canonical, idx
         )
@@ -346,7 +613,6 @@ class AssetVlIndexer:
             if isinstance(item, str):
                 text = item.strip()
             elif isinstance(item, dict):
-                # совместимость со старым форматом attributes
                 parts = [
                     str(item.get("key") or item.get("key_canonical") or "").strip(),
                     str(item.get("value") or item.get("value_raw") or "").strip(),
@@ -363,15 +629,6 @@ class AssetVlIndexer:
     def stable_id(source_file: str, page: int | None, model: str, idx: int) -> str:
         raw = f"{source_file}|{page or 0}|{model.strip().lower()}|{idx}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    def as_float(value: Any) -> float | None:
-        if value is None or value == "":
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
 
     @staticmethod
     def as_int(value: Any) -> int | None:
