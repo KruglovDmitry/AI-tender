@@ -29,8 +29,8 @@ function statusColor(status: string): string {
 export function ReportView({ report }: { report: AnalysisReport }) {
   const { settings } = useSettings();
   const cacheNote = report.index_reused
-    ? "индекс эталонов из кэша"
-    : "индекс эталонов построен заново";
+    ? "VL-каталог из кэша"
+    : "VL-каталог загружен";
   const scope = (report.query_selection?.scope as Record<string, unknown>) || {};
   const docSel = (report.query_selection?.doc_selection as Record<string, unknown>) || {};
   const matches = report.position_matches || [];
@@ -135,7 +135,7 @@ export function ReportView({ report }: { report: AnalysisReport }) {
                           {match.asset_hits && match.asset_hits.length > 0 && (
                             <details>
                               <summary className="cursor-pointer text-xs text-gray-500">
-                                Фрагменты эталона ({match.asset_hits.length})
+                                Фрагменты каталога ({match.asset_hits.length})
                               </summary>
                               <div className="mt-2 grid gap-2">
                                 {match.asset_hits.slice(0, 8).map((hit, hi) => (

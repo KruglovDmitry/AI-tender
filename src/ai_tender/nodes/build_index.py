@@ -1,12 +1,11 @@
-"""Нода: индекс эталонов."""
+"""Нода: загрузка VL-каталога эталонов для retrieval."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from ..services.index_service import indexed_file_paths, load_or_build_assets_index
 from ..models import PipelineState, Settings
+from ..services.catalog_retrieval import load_vl_catalog
 from .common import progress
 
 
@@ -14,31 +13,25 @@ def node_build_assets_index(state: PipelineState) -> dict[str, Any]:
     settings: Settings = state["settings"]
     progress(
         state,
-        "Индекс эталонов: загрузка embedding-модели и проверка кэша…",
+        "VL-каталог: загрузка product_json и эмбеддингов…",
         0.6,
     )
-    assets_index, asset_nodes, asset_warnings, index_reused = load_or_build_assets_index(
-        Path(state["assets_path"]),
+    catalog, catalog_warnings = load_vl_catalog(
         settings.cache_dir,
-        settings.embedding_model,
-        settings.chunk_size,
-        settings.chunk_overlap,
-        settings.embedding_device,
-        ocr_enabled=settings.ocr_enabled,
-        ocr_languages=settings.ocr_languages,
+        embedding_model=settings.embedding_model,
+        device=settings.embedding_device,
     )
-    files = indexed_file_paths(asset_nodes)
     progress(
         state,
         (
-            f"Индекс эталонов готов ({len(asset_nodes)} чанков, "
-            f"{'из кэша' if index_reused else 'построен заново'})"
+            f"VL-каталог готов ({catalog.size} продуктов из "
+            f"{len(catalog.indexed_files)} файлов)"
         ),
         0.7,
     )
     return {
-        "assets_index": assets_index,
-        "indexed_files": files,
-        "index_reused": index_reused,
-        "warnings": asset_warnings,
+        "product_catalog": catalog,
+        "indexed_files": catalog.indexed_files,
+        "index_reused": True,
+        "warnings": catalog_warnings,
     }

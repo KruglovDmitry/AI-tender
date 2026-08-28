@@ -9,7 +9,11 @@ from typing import Any
 
 from llama_index.core.llms import LLM
 
-from ..services.index_service import node_to_evidence, retrieve_for_queries
+from ..services.catalog_retrieval import (
+    VlCatalog,
+    catalog_hit_to_evidence,
+    search_catalog,
+)
 from ..services.logging_service import trace_note, trace_retrieval
 from ..models import (
     DEFAULT_USER_INSTRUCTION,
@@ -21,7 +25,7 @@ from ..models import (
     Settings,
 )
 from ..providers import complete_llm_json
-from .common import cap_evidence_per_file, cap_hits_per_file, progress
+from .common import progress
 
 
 POSITION_MATCH_SCHEMA_HINT = """
@@ -36,29 +40,28 @@ POSITION_MATCH_SCHEMA_HINT = """
 }
 
 Правила:
-- Опирайся ТОЛЬКО на position, requirements и asset_hits.
+- Опирайся ТОЛЬКО на position, requirements и asset_hits (описания продуктов из VL-каталога).
 - required_product и product_name — РАЗНЫЕ поля, не смешивай источники.
 - required_product: заполняй ТОЛЬКО если в названии позиции или в требованиях явно
   указано конкретное обозначение/тип/модель того, что нужно купить
   (в т.ч. формулировки «тип X или аналог»). Пиши кратко обозначение, без «или аналог».
   Если в тендере только обобщённое описание без конкретной модели — оставь "".
-- product_name: заполняй ТОЛЬКО из цитат эталона (asset_hits); пиши как в цитате.
-  Предпочтительно полный артикул/модель из таблицы каталога, а не только имя серии.
+- product_name: заполняй ТОЛЬКО из asset_hits (поле «Модель» или текст описания каталога).
+  Предпочтительно полный артикул/модель, а не только имя серии.
   Пример: «SR33020-6x9», а не «SR33».
-  Серию ставь, только если в цитатах нет конкретной строки модели.
-  Не общие слова категории («ИБП», «зарядное устройство», «светильник») без модели.
-- Выбор строки таблицы: если в цитатах есть несколько моделей одной серии,
+  Серию ставь, только если в описаниях нет конкретной строки модели.
+- Выбор кандидата: если в asset_hits несколько моделей одной серии,
   выбери ту, чьи характеристики ближе к требованиям именно этой позиции.
   Не бери заведомо несовместимый ряд, если есть ближе.
   Если часть requirements явно про другое изделие/другую строку перечня —
   игнорируй их при подборе, не отвергай из‑за них подходящий аналог.
 - Аналог разрешён только того же класса изделия (источник питания к источнику питания,
   зарядное к зарядному, розетка к розетке). Чужой тип в тендере («тип X или аналог»)
-  не обязан встречаться в эталоне — подбирай нашу модель того же класса из цитат.
+  не обязан встречаться в эталоне — подбирай нашу модель того же класса из asset_hits.
 - Запрещено подменять класс: внутренний узел другого изделия (например зарядка
   в составе ИБП) — это не позиция «зарядное устройство».
-- product_name обязан буквально встречаться в одной из цитат asset_hits
-  (артикул/модель как в тексте). Если в цитатах этого нет — product_name=""
+- product_name обязан буквально встречаться в одном из описаний asset_hits
+  (артикул/модель как в тексте). Если в описаниях этого нет — product_name=""
   и status=none. Не копируй required_product из тендера.
 - matched=true и status=matched|partial допустимы ТОЛЬКО если product_name непустой.
   Иначе matched=false и status=none.
@@ -120,7 +123,7 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
     qty = scope_item.get("qty")
     unit = str(scope_item.get("unit") or "").strip()
     requirements = _stable_requirements(requirements)
-    asset_hits = cap_evidence_per_file(asset_hits, per_file=5, limit=12)
+    asset_hits = asset_hits[:12]
     base = ScopePositionMatch(
         scope_name=scope_name,
         qty=qty if isinstance(qty, (int, float)) or qty is None else None,
@@ -130,7 +133,7 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
     )
     if not asset_hits:
         base.status = PositionMatchStatus.none
-        base.explanation = "Подходящего варианта в эталоне нет (нет релевантных фрагментов)."
+        base.explanation = "Подходящего варианта в VL-каталоге нет (нет кандидатов)."
         trace_note(
             "match_skip_no_hits",
             base.explanation,
@@ -160,8 +163,8 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
         "asset_hits": [hit.model_dump() for hit in asset_hits],
     }
     prompt = (
-        "Ты аналитик закупок. Подбери конкретный вариант продукции из цитат эталона "
-        "для позиции перечня с учётом её требований.\n"
+        "Ты аналитик закупок. По описаниям продуктов из VL-каталога (asset_hits) "
+        "выбери конкретный вариант для позиции перечня с учётом её требований.\n"
         f"ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:\n{instruction}\n\n"
         f"{POSITION_MATCH_SCHEMA_HINT}\n\n"
         f"ДАННЫЕ:\n{json.dumps(payload, ensure_ascii=False)}"
@@ -249,7 +252,15 @@ def position_to_query_text(scope_name: str, requirements: list[ExtractedRequirem
     return "\n".join(lines).strip()
 
 
-def retrieve_hits_for_position(scope_name: str, requirements: list[ExtractedRequirement], assets_index, top_k: int,) -> list:
+def retrieve_hits_for_position(
+    scope_name: str,
+    requirements: list[ExtractedRequirement],
+    catalog: VlCatalog,
+    *,
+    top_k: int,
+    embedding_model: str,
+    device: str | None,
+) -> list:
     query = position_to_query_text(scope_name, requirements)
     if not query:
         trace_note(
@@ -258,25 +269,24 @@ def retrieve_hits_for_position(scope_name: str, requirements: list[ExtractedRequ
             meta={"scope_name": scope_name, "requirements_count": len(requirements)},
         )
         return []
-    fetch_k = max(top_k * 4, 16)
-    hit_lists = retrieve_for_queries(assets_index, [query], top_k=fetch_k)
-    raw_hits = list(hit_lists[0]) if hit_lists else []
-    hits = cap_hits_per_file(raw_hits, per_file=5, limit=max(top_k * 3, 12))
-    hit_payload = []
-    for hit in hits:
-        node = getattr(hit, "node", None)
-        meta = (getattr(node, "metadata", None) or {}) if node is not None else {}
-        text = ""
-        if node is not None and hasattr(node, "get_content"):
-            text = node.get_content(metadata_mode="none") or ""
-        hit_payload.append(
-            {
-                "score": getattr(hit, "score", None),
-                "file": meta.get("file_path") or meta.get("file_name"),
-                "location": meta.get("location"),
-                "text_preview": text[:800],
-            }
-        )
+    fetch_k = max(top_k * 4, 12)
+    hits = search_catalog(
+        catalog,
+        query,
+        top_k=fetch_k,
+        embedding_model=embedding_model,
+        device=device,
+    )
+    hit_payload = [
+        {
+            "score": hit.score,
+            "file": hit.source_file,
+            "model": hit.product.model,
+            "location": f"стр. {hit.product.source.page}" if hit.product.source.page else "VL-каталог",
+            "text_preview": format_product_preview(hit),
+        }
+        for hit in hits
+    ]
     trace_retrieval(
         "retrieve_position",
         query=query,
@@ -285,11 +295,22 @@ def retrieve_hits_for_position(scope_name: str, requirements: list[ExtractedRequ
             "scope_name": scope_name,
             "requirements_count": len(requirements),
             "top_k": top_k,
-            "raw_hits": len(raw_hits),
-            "deduped_hits": len(hits),
+            "fetch_k": fetch_k,
+            "catalog_products": catalog.size,
+            "retrieval": "vl_catalog",
         },
     )
-    return hits
+    return hits[: max(top_k * 3, 12)]
+
+
+def format_product_preview(hit) -> str:
+    from ..services.catalog_retrieval import format_product_quote
+
+    return format_product_quote(
+        hit.product,
+        catalog_name=hit.catalog_name,
+        source_file=hit.source_file,
+    )[:800]
 
 
 def _failed_position_match(
@@ -309,10 +330,27 @@ def _failed_position_match(
     )
 
 
-def _match_one_position(*, llm: LLM, scope_item: dict[str, Any], requirements: list[ExtractedRequirement], assets_index, top_k: int, user_instruction: str | None,) -> ScopePositionMatch:
+def _match_one_position(
+    *,
+    llm: LLM,
+    scope_item: dict[str, Any],
+    requirements: list[ExtractedRequirement],
+    product_catalog: VlCatalog,
+    top_k: int,
+    user_instruction: str | None,
+    embedding_model: str,
+    embedding_device: str | None,
+) -> ScopePositionMatch:
     name = str(scope_item.get("name") or "").strip() or "позиция"
-    hits = retrieve_hits_for_position(name, requirements, assets_index, top_k=top_k)
-    asset_evidence = [node_to_evidence(hit.node, hit.score) for hit in hits]
+    hits = retrieve_hits_for_position(
+        name,
+        requirements,
+        product_catalog,
+        top_k=top_k,
+        embedding_model=embedding_model,
+        device=embedding_device,
+    )
+    asset_evidence = [catalog_hit_to_evidence(hit) for hit in hits]
     return match_scope_position(
         llm,
         scope_item=scope_item,
@@ -326,7 +364,21 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
     settings: Settings = state["settings"]
     scope_items = list(state.get("scope_items") or [])
     reqs_by_item = list(state.get("requirements_by_item") or [])
-    assets_index = state.get("assets_index")
+    product_catalog = state.get("product_catalog")
+    if product_catalog is None or product_catalog.size == 0:
+        warnings = [
+            "VL-каталог пуст — подбор по позициям невозможен. Переиндексируйте эталоны."
+        ]
+        matches = [
+            _failed_position_match(
+                scope_items[i],
+                reqs_by_item[i] if i < len(reqs_by_item) else [],
+                explanation="VL-каталог не содержит продуктов для подбора.",
+            )
+            for i in range(len(scope_items))
+        ]
+        return {"position_matches": matches, "warnings": warnings}
+
     top_k = max(settings.top_k, 5)
     total = max(len(scope_items), 1)
     workers = max(1, int(settings.match_parallelism or 1))
@@ -351,9 +403,11 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
                 llm=llm,
                 scope_item=scope_item,
                 requirements=requirements,
-                assets_index=assets_index,
+                product_catalog=product_catalog,
                 top_k=top_k,
                 user_instruction=instruction,
+                embedding_model=settings.embedding_model,
+                embedding_device=settings.embedding_device,
             )
             return index, match, None
         except Exception as exc:

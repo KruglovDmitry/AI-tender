@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
 from ai_tender.nodes.scope import scope_has_detailed_list
-from ai_tender.models import Evidence, ExtractedRequirement, PositionMatchStatus, ScopePositionMatch
+from ai_tender.models import Evidence, ExtractedRequirement, PositionMatchStatus, Product, ScopePositionMatch
 from ai_tender.nodes.common import cap_evidence_per_file, dedupe_evidence_by_file
 from ai_tender.nodes.match import (
     match_scope_position,
@@ -243,17 +243,29 @@ def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:
 
     calls: list[str] = []
 
-    def fake_match_one(*, llm, scope_item, requirements, assets_index, top_k, user_instruction):
+    def fake_match_one(
+        *,
+        llm,
+        scope_item,
+        requirements,
+        product_catalog,
+        top_k,
+        user_instruction,
+        embedding_model,
+        embedding_device,
+    ):
         name = str(scope_item.get("name") or "")
         calls.append(name)
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.partial)
 
     monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
+    from ai_tender.services.catalog_retrieval import VlCatalog
+
     settings = Settings(match_parallelism=4)
     state = {
         "settings": settings,
         "llm": MagicMock(),
-        "assets_index": object(),
+        "product_catalog": VlCatalog(products=[Product(id="1")]),
         "scope_items": [{"name": f"поз-{i}"} for i in range(6)],
         "requirements_by_item": [[] for _ in range(6)],
         "progress": None,
@@ -268,18 +280,30 @@ def test_node_match_positions_isolates_errors(monkeypatch) -> None:
     from ai_tender.nodes import match as match_mod
     from ai_tender.models import Settings
 
-    def fake_match_one(*, llm, scope_item, requirements, assets_index, top_k, user_instruction):
+    def fake_match_one(
+        *,
+        llm,
+        scope_item,
+        requirements,
+        product_catalog,
+        top_k,
+        user_instruction,
+        embedding_model,
+        embedding_device,
+    ):
         name = str(scope_item.get("name") or "")
         if name == "bad":
             raise RuntimeError("boom")
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.matched)
 
     monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
+    from ai_tender.services.catalog_retrieval import VlCatalog
+
     settings = Settings(match_parallelism=2)
     state = {
         "settings": settings,
         "llm": MagicMock(),
-        "assets_index": object(),
+        "product_catalog": VlCatalog(products=[Product(id="1")]),
         "scope_items": [{"name": "ok"}, {"name": "bad"}, {"name": "ok2"}],
         "requirements_by_item": [[], [], []],
         "progress": None,
