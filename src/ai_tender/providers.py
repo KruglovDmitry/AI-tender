@@ -194,9 +194,7 @@ def build_llm(settings: Settings) -> LLM:
     if provider == "openai":
         from llama_index.llms.openai import OpenAI
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("Не указан OPENAI_API_KEY")
+        api_key = os.getenv("OPENAI_API_KEY") or "EMPTY"
         return OpenAI(
             model=settings.llm_model,
             api_key=api_key,

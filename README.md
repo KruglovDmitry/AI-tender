@@ -20,8 +20,8 @@ LlamaIndex RAG для оценки применимости эталонной �
 
 1. Заполните `.env` (или он создастся из `.env.example` при первом запуске).
 2. Положите документы в `sources/` и `assets/` рядом с проектом.
-3. Дважды щёлкните **`start.bat`** — Docker + **нативное окно** (WebView2, без вкладок браузера).
-4. Без Docker: **`start-native.bat`** — локальный Streamlit в том же окне.
+3. Дважды щёлкните **`start.bat`** — Docker + **нативное окно** (WebView2).
+4. Без Docker: **`start-native.bat`** — локальный API + UI в том же окне.
 5. Остановка Docker: **`stop.bat`**.
 
 Пути внутри контейнера:
@@ -41,37 +41,38 @@ pip install -e ".[native]"
 python scripts/native_window.py --serve
 ```
 
+UI: http://localhost:8000 (React + FastAPI).
+
 ## Запуск локально (без Docker)
 
-Требуется Python 3.12.
+Требуется Python 3.12 и Node.js 20+.
 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 py -m pip install -e ".[dev]"
-Copy-Item .env.example .env
-# заполните DEEPSEEK_API_KEY или OPENAI_API_KEY
-streamlit run app.py --server.fileWatcherType none
+cd ui && npm install && npm run build && cd ..
+ai-tender-api
+# или для разработки UI:
+# терминал 1: uvicorn ai_tender.api.main:app --reload --app-dir src
+# терминал 2: cd ui && npm run dev
 ```
 
-UI: `streamlit run app.py --server.fileWatcherType none`.
 Кэш индекса эталонов: `data/cache/llama_assets/`.
 
 ## Веб на стенде (доступ из браузера)
 
-Поднимите приложение на машине стенда (Docker или native) так, чтобы порт `8501`
+Поднимите приложение на машине стенда (Docker или native) так, чтобы порт `8000`
 был доступен в LAN/VPN. Эталоны лежат в `assets/` на сервере.
 
 В UI:
 
-1. **Эталоны** — по умолчанию используются файлы на сервере. Кнопка
-   **«Обновить эталоны»** заменяет общий комплект (ZIP или файлы) и сразу
-   строит индекс.
-2. **Тендер** — «Загрузить файлы» из браузера или «Папка на сервере» (для админа).
+1. **Эталоны** — просмотр VL-индекса, загрузка и удаление PDF.
+2. **Анализ тендера** — загрузка файлов из браузера или папка на сервере.
 3. После анализа — **скачать отчёт** (`.md` / `.json`).
 
 Загрузки тендера сохраняются в `data/uploads/` и периодически очищаются.
-Не публикуйте `8501` в открытый интернет без VPN/пароля.
+Не публикуйте `8000` в открытый интернет без VPN/пароля.
 
 ## Переменные окружения
 

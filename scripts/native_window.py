@@ -1,8 +1,9 @@
-"""Нативное окно для Streamlit UI (WebView2 на Windows)."""
+"""Нативное окно для React UI (WebView2 на Windows)."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -23,20 +24,20 @@ def wait_for_server(url: str, timeout_sec: int = 120) -> bool:
     return False
 
 
-def start_streamlit(root: Path) -> subprocess.Popen:
+def start_api(root: Path) -> subprocess.Popen:
     return subprocess.Popen(
         [
             sys.executable,
             "-m",
-            "streamlit",
-            "run",
-            "app.py",
-            "--server.fileWatcherType",
-            "none",
-            "--server.headless",
-            "true",
+            "uvicorn",
+            "ai_tender.api.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8000",
         ],
         cwd=str(root),
+        env={**os.environ.copy(), "PYTHONPATH": str(root / "src")},
     )
 
 
@@ -55,11 +56,11 @@ def open_native_window(url: str, title: str = "AI Tender") -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI Tender native window")
-    parser.add_argument("--url", default="http://localhost:8501")
+    parser.add_argument("--url", default="http://localhost:8000")
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="Запустить Streamlit локально (без Docker)",
+        help="Запустить API локально (без Docker)",
     )
     parser.add_argument("--title", default="AI Tender")
     args = parser.parse_args()
@@ -68,10 +69,10 @@ def main() -> int:
     process: subprocess.Popen | None = None
 
     if args.serve:
-        print("Запуск Streamlit...")
-        process = start_streamlit(root)
+        print("Запуск API…")
+        process = start_api(root)
 
-    print(f"Ожидание {args.url} ...")
+    print(f"Ожидание {args.url} …")
     if not wait_for_server(args.url):
         if process is not None:
             process.terminate()

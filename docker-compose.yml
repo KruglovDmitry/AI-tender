@@ -3,7 +3,7 @@ services:
     build: .
     container_name: ai-tender
     ports:
-      - "8501:8501"
+      - "8000:8000"
     env_file:
       - .env
     environment:
@@ -13,13 +13,9 @@ services:
       TESSERACT_CMD: /usr/bin/tesseract
     volumes:
       - ./sources:/data/tender:ro
-      # rw: «Обновить эталоны» пишет в этот каталог
       - ./assets:/data/assets
       - ./data:/app/data
-      # UI/код без пересборки образа
-      - ./app.py:/app/app.py:ro
       - ./src:/app/src:ro
-      # HF + LlamaIndex кладут bge-m3 в разные пути — монтируем весь .cache
       - model_cache:/root/.cache
     restart: unless-stopped
 

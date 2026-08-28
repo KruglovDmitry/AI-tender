@@ -216,8 +216,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Streamlit
-.streamlit/secrets.toml
+# Streamlit (legacy)
+.streamlit/
+
+# Frontend
+ui/node_modules/
 
 assets
 sources
@@ -225,4 +228,3 @@ sources
 # AI Tender runtime
 data/
 .env
-.streamlit/secrets.toml

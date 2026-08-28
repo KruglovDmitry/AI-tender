@@ -8,5 +8,5 @@
 		output file /home/dima/projects/AI-tender/data/caddy-access.log
 		format console
 	}
-	reverse_proxy 127.0.0.1:8501
+	reverse_proxy 127.0.0.1:8000
 }

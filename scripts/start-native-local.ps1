@@ -1,4 +1,4 @@
-﻿# Local run without Docker: Streamlit + native window.
+﻿# Local run without Docker: FastAPI + native window.
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot

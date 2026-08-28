@@ -74,7 +74,7 @@ else {
     }
 }
 
-$url = "http://localhost:8501"
+$url = "http://localhost:8000"
 $python = Get-ProjectPython
 
 Write-Host "Installing pywebview if needed..." -ForegroundColor Cyan

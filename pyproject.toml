@@ -28,12 +28,17 @@ dependencies = [
   "sentence-transformers",
   "sharepoint-to-text",
   "langgraph>=0.2",
-  "streamlit",
+  "fastapi",
+  "uvicorn[standard]",
+  "python-multipart",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "python-docx"]
 native = ["pywebview>=5.0"]
+
+[project.scripts]
+ai-tender-api = "ai_tender.api.main:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_tender"]
