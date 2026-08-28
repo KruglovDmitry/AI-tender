@@ -1,33 +1,23 @@
 import { useRef, useState } from "react";
-import { pollJob, startAnalyze } from "../api";
+import { useAnalysis } from "../components/AnalysisProvider";
+import { ProgressTicker } from "../components/ProgressTicker";
 import { ReportView } from "../components/ReportView";
 import { useSettings } from "../components/SettingsPanel";
 import {
   alertErrorClass,
   btnActionClass,
-  mutedTextClass,
+  btnSecondaryClass,
   pageActionBarClass,
-  progressBarClass,
-  progressTrackClass,
 } from "../lib/styles";
-import type { AnalysisReport } from "../types";
 
 export function AnalysisPage() {
   const { settings } = useSettings();
+  const { running, progress, status, error, report, runAnalyze, clearReport, clearError } =
+    useAnalysis();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<AnalysisReport | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
-  const runAnalyze = async (uploadFiles: File[]) => {
-    setError(null);
-    setReport(null);
-    setRunning(true);
-    setProgress(0);
-    setStatus("Запуск…");
-
+  const buildForm = (uploadFiles: File[]) => {
     const form = new FormData();
     form.append("llm_provider", settings.llmProvider);
     form.append("ocr_enabled", String(settings.ocrEnabled));
@@ -40,34 +30,20 @@ export function AnalysisPage() {
         form.append("files", file);
       }
     }
-
-    try {
-      const job = await startAnalyze(form);
-      const done = await pollJob(job.id, (j) => {
-        setProgress(j.progress);
-        setStatus(j.message);
-      });
-      const result = done.result as { report?: AnalysisReport } | undefined;
-      if (result?.report) {
-        setReport(result.report);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRunning(false);
-    }
+    return form;
   };
 
   const onStart = () => {
     if (running) return;
-    setError(null);
+    clearError();
+    setValidationError(null);
 
     if (settings.tenderSource === "folder") {
       if (!settings.tenderPath.trim()) {
-        setError("Укажите папку с документами тендера в настройках.");
+        setValidationError("Укажите папку с документами тендера в настройках.");
         return;
       }
-      void runAnalyze([]);
+      runAnalyze(buildForm([]));
       return;
     }
 
@@ -78,7 +54,8 @@ export function AnalysisPage() {
     const picked = event.target.files ? Array.from(event.target.files) : [];
     event.target.value = "";
     if (!picked.length) return;
-    void runAnalyze(picked);
+    setValidationError(null);
+    runAnalyze(buildForm(picked));
   };
 
   return (
@@ -97,25 +74,31 @@ export function AnalysisPage() {
             {running ? "Анализ…" : "Начать"}
           </button>
 
-          {running && (
-            <div className="grid w-full max-w-md gap-2">
-              <p className={`text-center ${mutedTextClass}`}>{status}</p>
-              <div className={progressTrackClass}>
-                <div
-                  className={progressBarClass}
-                  style={{ width: `${Math.round(progress * 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
+          {running && <ProgressTicker message={status} progress={progress} />}
 
-          {error && <p className={`max-w-md text-center ${alertErrorClass}`}>{error}</p>}
+          {(error || validationError) && (
+            <p className={`max-w-md text-center ${alertErrorClass}`}>
+              {validationError || error}
+            </p>
+          )}
         </div>
       )}
 
       {report && (
-        <div className="min-h-0 overflow-y-auto">
-          <ReportView report={report} />
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
+          <div className={pageActionBarClass}>
+            <button
+              type="button"
+              disabled={running}
+              onClick={clearReport}
+              className={btnSecondaryClass}
+            >
+              Новый анализ
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <ReportView report={report} />
+          </div>
         </div>
       )}
     </div>

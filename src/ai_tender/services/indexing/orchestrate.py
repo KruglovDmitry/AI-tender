@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ...models import IndexingContext, IndexingResult, Settings
 from .base import AssetVlIndexer
+from .locks import mark_indexing
 
 
 def index_asset_files(
@@ -51,7 +52,11 @@ def index_asset_files(
         if not rel:
             continue
         path = assets_path / rel
-        result = indexer.index(path, relative_path=rel, context=context)
+        mark_indexing(rel, active=True)
+        try:
+            result = indexer.index(path, relative_path=rel, context=context)
+        finally:
+            mark_indexing(rel, active=False)
         results.append(result)
         warnings.extend(result.details.get("warnings") or [])
 

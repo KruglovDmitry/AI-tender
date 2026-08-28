@@ -20,6 +20,7 @@ export interface SettingsState {
   assetsPath: string;
   tenderPath: string;
   tenderSource: "upload" | "folder";
+  reportDownloadFormat: "md" | "json";
 }
 
 interface SettingsContextValue {
@@ -41,6 +42,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     assetsPath: "",
     tenderPath: "",
     tenderSource: "upload",
+    reportDownloadFormat: "md",
   });
   const [ocrOk, setOcrOk] = useState(true);
   const [ocrHint, setOcrHint] = useState("");
@@ -171,6 +173,26 @@ export function SettingsPanel() {
               setSettings((s) => ({ ...s, maxReqs: Number(e.target.value) }))
             }
           />
+        </div>
+
+        <div>
+          <label className={labelClass} htmlFor="report-format">
+            Формат скачиваемого отчёта
+          </label>
+          <select
+            id="report-format"
+            className={selectClass}
+            value={settings.reportDownloadFormat}
+            onChange={(e) =>
+              setSettings((s) => ({
+                ...s,
+                reportDownloadFormat: e.target.value as "md" | "json",
+              }))
+            }
+          >
+            <option value="md">Markdown (.md)</option>
+            <option value="json">JSON (.json)</option>
+          </select>
         </div>
 
         {config.running_in_docker && (

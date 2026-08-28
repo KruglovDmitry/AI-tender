@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from typing import Any
 
 from ...providers import try_parse_llm_json
@@ -25,9 +26,20 @@ def complete_vl_json(
     timeout_sec: float = 120.0,
     structure_hint: str = "той же структуры",
     repair: bool = True,
+    log_context: str = "",
 ) -> tuple[dict[str, Any] | None, int]:
-    """Мультимодальный chat.completions → JSON. → (data|None, n_calls)."""
+    """Мультimодальный chat.completions → JSON. → (data|None, n_calls)."""
     from openai import OpenAI
+
+    tag = log_context or "call"
+    print(
+        f"[vl] {tag} → POST {base_url.rstrip('/')}/chat/completions "
+        f"model={model!r} image={len(image_bytes)}B mime={image_mime} "
+        f"prompt={len(prompt)}ch max_tokens={max_tokens} timeout={timeout_sec}s",
+        flush=True,
+    )
+    prompt_preview = prompt.replace("\n", " ")[:160]
+    print(f"[vl] {tag} prompt≈ {prompt_preview!r}", flush=True)
 
     client = OpenAI(
         base_url=base_url.rstrip("/"),
@@ -36,7 +48,6 @@ def complete_vl_json(
     )
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_url = f"data:{image_mime};base64,{b64}"
-    # Картинка первой — стабильнее для Qwen2.5-VL.
     messages: list[dict[str, Any]] = [
         {
             "role": "user",
@@ -46,18 +57,35 @@ def complete_vl_json(
             ],
         }
     ]
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0,
-        top_p=1.0,
-        max_tokens=max_tokens,
-    )
-    raw = (response.choices[0].message.content or "") if response.choices else ""
+    t0 = time.perf_counter()
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0,
+            top_p=1.0,
+            max_tokens=max_tokens,
+        )
+    except Exception as exc:
+        elapsed = time.perf_counter() - t0
+        print(
+            f"[vl] {tag} ← ERROR after {elapsed:.1f}s: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        raise
+    elapsed = time.perf_counter() - t0
+    choice = response.choices[0] if response.choices else None
+    raw = (choice.message.content or "") if choice else ""
+    finish = choice.finish_reason if choice else "?"
     data = try_parse_llm_json(raw)
+    print(
+        f"[vl] {tag} ← {elapsed:.1f}s finish={finish} raw={len(raw)}ch "
+        f"parsed={'ok' if data is not None else 'fail'}",
+        flush=True,
+    )
     if data is not None:
         return data, 1
-    _log_raw("json_parse_failed", raw)
+    _log_raw(f"{tag} json_parse_failed", raw)
     if not repair:
         return None, 1
 
@@ -67,6 +95,8 @@ def complete_vl_json(
         "Без markdown, без комментариев.\n\n"
         f"ИСХОДНЫЙ ОТВЕТ:\n{raw[:8000]}"
     )
+    print(f"[vl] {tag} → repair (text-only) max_tokens={max_tokens}", flush=True)
+    t1 = time.perf_counter()
     repaired = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": repair_prompt}],
@@ -74,10 +104,16 @@ def complete_vl_json(
         top_p=1.0,
         max_tokens=max_tokens,
     )
+    repair_elapsed = time.perf_counter() - t1
     repaired_raw = (
         (repaired.choices[0].message.content or "") if repaired.choices else ""
     )
     data = try_parse_llm_json(repaired_raw)
+    print(
+        f"[vl] {tag} ← repair {repair_elapsed:.1f}s raw={len(repaired_raw)}ch "
+        f"parsed={'ok' if data is not None else 'fail'}",
+        flush=True,
+    )
     if data is None:
-        _log_raw("repair_parse_failed", repaired_raw)
+        _log_raw(f"{tag} repair_parse_failed", repaired_raw)
     return data, 2

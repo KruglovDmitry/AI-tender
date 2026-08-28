@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any
+
+from .indexing.locks import AssetFileLockedError, is_indexing
 
 from llama_index.core import Document, Settings, StorageContext, VectorStoreIndex, load_index_from_storage
 from llama_index.core.schema import BaseNode, NodeWithScore
@@ -18,6 +21,28 @@ from .loader_service import load_documents, split_documents
 CURRENT_CACHE_NAME = "current"
 
 _INDEXABLE_SUFFIXES = {".pdf"}
+
+
+def _unlink_file(path: Path, *, retries: int = 8, delay_sec: float = 0.25) -> None:
+    """Удаляет файл; на Windows повторяет при WinError 32 (файл занят)."""
+    last_err: OSError | None = None
+    for attempt in range(retries):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            winerr = getattr(exc, "winerror", None)
+            if winerr == 32 or exc.errno in (13, 16, 26):
+                last_err = exc
+                if attempt + 1 < retries:
+                    time.sleep(delay_sec)
+                    continue
+            raise
+    raise AssetFileLockedError(
+        f"Файл занят другим процессом (возможно, идёт индексация): {path.name}"
+    ) from last_err
 
 
 def _resolve_device(device: str | None) -> str | None:
@@ -606,13 +631,17 @@ def remove_asset_from_index(
 
     meta = _read_meta(entry_dir)
     warnings: list[str] = []
+    if delete_file and is_indexing(rel):
+        raise AssetFileLockedError(
+            f"Идёт индексация «{Path(rel).name}» — дождитесь завершения и повторите удаление"
+        )
     if not meta or not (entry_dir / "docstore.json").exists():
         if delete_file:
             target = (assets_path / rel).resolve()
             if assets_path.resolve() not in target.parents and target != assets_path.resolve():
                 raise ValueError(f"Путь вне каталога эталонов: {rel}")
             if target.is_file():
-                target.unlink()
+                _unlink_file(target)
         return None, [], warnings
 
     if not _params_match(
@@ -633,7 +662,7 @@ def remove_asset_from_index(
         if delete_file:
             target = assets_path / rel
             if target.is_file():
-                target.unlink()
+                _unlink_file(target)
         return rebuild_assets_index(
             assets_path,
             cache_dir,
@@ -654,7 +683,7 @@ def remove_asset_from_index(
         if not str(target).startswith(str(assets_path.resolve())):
             raise ValueError(f"Путь вне каталога эталонов: {rel}")
         if target.is_file():
-            target.unlink()
+            _unlink_file(target)
         else:
             warnings.append(f"Файл на диске не найден: {rel}")
 

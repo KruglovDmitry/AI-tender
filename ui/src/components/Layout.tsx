@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
+import { useAnalysis } from "./AnalysisProvider";
 import { AnimatedOutlet } from "./AnimatedOutlet";
 import { BackgroundDecor } from "./BackgroundDecor";
 import { SettingsDialog } from "./SettingsPanel";
@@ -13,6 +14,9 @@ const tabClass = ({ isActive }: { isActive: boolean }) =>
 
 export function Layout() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const location = useLocation();
+  const { running, progress, report } = useAnalysis();
+  const onAnalysisPage = location.pathname === "/";
 
   return (
     <div className="relative flex min-h-screen flex-col">
@@ -26,7 +30,23 @@ export function Layout() {
 
           <nav className="ml-auto flex items-center gap-2">
             <NavLink to="/" end className={tabClass}>
-              Анализ тендера
+              <span className="inline-flex items-center gap-2">
+                Анализ тендера
+                {running && (
+                  <span
+                    className="inline-flex min-w-[2.25rem] items-center justify-center rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums"
+                    title="Анализ выполняется"
+                  >
+                    {Math.round(progress * 100)}%
+                  </span>
+                )}
+                {!running && report && !onAnalysisPage && (
+                  <span
+                    className="size-2 rounded-full bg-emerald-400"
+                    title="Результат анализа готов"
+                  />
+                )}
+              </span>
             </NavLink>
             <NavLink to="/references" className={tabClass}>
               Эталоны

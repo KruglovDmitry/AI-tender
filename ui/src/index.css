@@ -53,4 +53,42 @@ input[type="range"] {
   .page-transition {
     animation: none;
   }
+
+  .progress-ticker-marquee-inner {
+    animation: none;
+  }
+}
+
+@keyframes progress-ticker-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.progress-ticker-marquee-inner {
+  animation: progress-ticker-marquee 22s linear infinite;
+}
+
+.report-accordion {
+  border: none;
+  background: transparent;
+}
+
+.report-accordion > summary {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.report-accordion > summary:focus {
+  outline: none;
+}
+
+.report-accordion > summary:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-blue-800) 35%, transparent);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
 }

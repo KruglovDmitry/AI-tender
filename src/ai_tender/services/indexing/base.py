@@ -28,6 +28,25 @@ from .vl_client import complete_vl_json
 
 PAGE_SCAN_SCHEMA_HINT = '{"summary":"","has_products":true}'
 
+
+def _index_log(rel: str, message: str) -> None:
+    print(f"[assets index] {rel}: {message}", flush=True)
+
+
+def _emit_progress(
+    context: IndexingContext,
+    *,
+    rel: str,
+    phase: str,
+    page: int,
+    total: int,
+    detail: str,
+) -> None:
+    _index_log(rel, f"{phase} {page}/{total} — {detail}")
+    callback = context.extra.get("on_index_progress")
+    if callable(callback):
+        callback(phase, page, total, detail)
+
 PAGE_MERGE_SCHEMA_HINT = (
     '{"catalog_name":"","update":false,'
     '"products_add":[{"model":"","manufacturer":"","category":"",'
@@ -119,6 +138,15 @@ class AssetVlIndexer:
 
         try:
             doc_index, warnings = self.extract(relative_path, context)
+            _index_log(relative_path, "сохранение JSON и эмбеддингов…")
+            _emit_progress(
+                context,
+                rel=relative_path,
+                phase="persist",
+                page=0,
+                total=0,
+                detail="сохранение JSON и эмбеддингов",
+            )
             warnings.extend(self.persist(doc_index, context))
         except Exception as exc:
             return IndexingResult(
@@ -190,34 +218,65 @@ class AssetVlIndexer:
                 [f"Не удалось открыть PDF {filename}: {exc}"],
             )
 
-        try:
+        with doc:
             n_pages = min(context.vl_max_pages, doc.page_count)
             scale = max(0.5, float(context.vl_image_scale))
             matrix = fitz.Matrix(scale, scale)
             vl_call = context.extra.get("vl_complete") or complete_vl_json
+            scan_max_tokens = min(256, context.vl_max_output_tokens)
+            total_vl_calls = n_pages * 2
+
+            _index_log(
+                rel,
+                "старт "
+                f"pages={n_pages}/{doc.page_count} scale={scale} "
+                f"vl={context.vl_base_url} model={context.vl_model!r} "
+                f"timeout={context.vl_timeout_sec}s scan_tokens={scan_max_tokens} "
+                f"merge_tokens={context.vl_max_output_tokens} "
+                f"vl_вызовов≈{total_vl_calls} (2 прохода)",
+            )
+            _emit_progress(
+                context,
+                rel=rel,
+                phase="start",
+                page=0,
+                total=n_pages,
+                detail=f"индексация {filename}, {n_pages} стр.",
+            )
 
             # --- Проход 1: краткие описания всех страниц ---
             scan_rows: list[dict[str, Any]] = []
             for i in range(n_pages):
                 page_num = i + 1
+                _emit_progress(
+                    context,
+                    rel=rel,
+                    phase="scan",
+                    page=page_num,
+                    total=n_pages,
+                    detail=f"ожидание VL (scan стр. {page_num})",
+                )
                 try:
                     pix = doc.load_page(i).get_pixmap(matrix=matrix, alpha=False)
                     image_bytes = pix.tobytes("jpeg")
+                    scan_prompt = PAGE_SCAN_PROMPT.format(
+                        filename=filename, page=page_num
+                    )
                     scan_data, _ = vl_call(
                         image_bytes=image_bytes,
-                        prompt=PAGE_SCAN_PROMPT.format(
-                            filename=filename, page=page_num
-                        ),
+                        prompt=scan_prompt,
                         base_url=context.vl_base_url,
                         model=context.vl_model,
                         api_key=context.vl_api_key,
                         image_mime="image/jpeg",
-                        max_tokens=min(256, context.vl_max_output_tokens),
+                        max_tokens=scan_max_tokens,
                         timeout_sec=context.vl_timeout_sec,
                         structure_hint=PAGE_SCAN_SCHEMA_HINT,
+                        log_context=f"{rel} scan p{page_num}/{n_pages}",
                     )
                 except Exception as exc:
                     warnings.append(f"скан стр. {page_num}: {exc}")
+                    _index_log(rel, f"scan p{page_num}/{n_pages} ERROR: {exc}")
                     scan_rows.append(
                         {"page": page_num, "summary": "", "has_products": True}
                     )
@@ -234,28 +293,33 @@ class AssetVlIndexer:
                         "has_products": has_products,
                     }
                 )
+                _index_log(
+                    rel,
+                    f"scan p{page_num}/{n_pages} ok "
+                    f"has_products={has_products} summary={summary[:80]!r}",
+                )
 
             scan_hint_pages = [
                 int(row["page"]) for row in scan_rows if row.get("has_products")
             ]
-            print(
-                f"[assets index] {rel}: scan_hint_pages={scan_hint_pages}",
-                flush=True,
-            )
-            for row in scan_rows:
-                print(
-                    f"[assets index] {rel}: scan p{row['page']} "
-                    f"has_products={row['has_products']} "
-                    f"summary={row.get('summary')!r}",
-                    flush=True,
-                )
+            _index_log(rel, f"scan завершён hint_pages={scan_hint_pages}")
             warnings.append(f"scan_hint_pages={scan_hint_pages}")
 
             page_summaries_text = self.format_page_summaries(scan_rows)
 
             # --- Проход 2: все страницы + контекст, merge ---
+            _index_log(rel, "merge: второй проход по всем страницам")
             for i in range(n_pages):
                 page_num = i + 1
+                known_n = len(products)
+                _emit_progress(
+                    context,
+                    rel=rel,
+                    phase="merge",
+                    page=page_num,
+                    total=n_pages,
+                    detail=f"ожидание VL (merge стр. {page_num}, продуктов={known_n})",
+                )
                 try:
                     pix = doc.load_page(i).get_pixmap(matrix=matrix, alpha=False)
                     image_bytes = pix.tobytes("jpeg")
@@ -265,6 +329,12 @@ class AssetVlIndexer:
                         catalog_name=catalog_name or "(ещё не известно)",
                         page_summaries=page_summaries_text,
                         known_products=self.format_known_products(products),
+                    )
+                    _index_log(
+                        rel,
+                        f"merge p{page_num}/{n_pages} → VL "
+                        f"image={len(image_bytes)}B prompt={len(prompt)}ch "
+                        f"known_products={known_n}",
                     )
                     data, _ = vl_call(
                         image_bytes=image_bytes,
@@ -276,12 +346,15 @@ class AssetVlIndexer:
                         max_tokens=context.vl_max_output_tokens,
                         timeout_sec=context.vl_timeout_sec,
                         structure_hint=PAGE_MERGE_SCHEMA_HINT,
+                        log_context=f"{rel} merge p{page_num}/{n_pages}",
                     )
                 except Exception as exc:
                     warnings.append(f"стр. {page_num}: {exc}")
+                    _index_log(rel, f"merge p{page_num}/{n_pages} ERROR: {exc}")
                     continue
                 if data is None:
                     warnings.append(f"стр. {page_num}: VL JSON не разобран")
+                    _index_log(rel, f"merge p{page_num}/{n_pages} JSON не разобран")
                     continue
 
                 changed, catalog_name = self.apply_page_merge(
@@ -293,13 +366,21 @@ class AssetVlIndexer:
                 )
                 if changed:
                     touched_pages.append(page_num)
-                    print(
-                        f"[assets index] {rel}: merge p{page_num} "
-                        f"products={len(products)}",
-                        flush=True,
-                    )
-        finally:
-            doc.close()
+                _index_log(
+                    rel,
+                    f"merge p{page_num}/{n_pages} "
+                    f"changed={changed} products={len(products)} "
+                    f"catalog={catalog_name!r}",
+                )
+            _index_log(rel, f"merge завершён products={len(products)}")
+            _emit_progress(
+                context,
+                rel=rel,
+                phase="done",
+                page=n_pages,
+                total=n_pages,
+                detail=f"VL готово, продуктов={len(products)}",
+            )
 
         if not products:
             warnings.append(
@@ -330,6 +411,8 @@ class AssetVlIndexer:
             raise ValueError("IndexingContext.cache_dir обязателен")
 
         index.embedding_model = context.embedding_model
+        rel = index.source_file
+        _index_log(rel, f"persist: JSON + embeddings для {len(index.products)} продуктов")
         save_product_index(context.cache_dir, index)
         if not index.products:
             for embed_path in embeddings_paths(context.cache_dir, index.source_file):

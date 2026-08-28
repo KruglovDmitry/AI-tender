@@ -8,6 +8,7 @@ import {
   uploadAssets,
 } from "../api";
 import { useSettings } from "../components/SettingsPanel";
+import { ProgressTicker } from "../components/ProgressTicker";
 import {
   alertErrorClass,
   assetItemClass,
@@ -16,8 +17,6 @@ import {
   btnOutlineDangerClass,
   mutedTextClass,
   pageActionBarClass,
-  progressBarClass,
-  progressTrackClass,
 } from "../lib/styles";
 import type { AssetFile, ProductDocumentIndex } from "../types";
 
@@ -190,19 +189,14 @@ export function AssetsPage() {
           onClick={onAddClick}
           className={btnActionClass}
         >
-          {uploading ? "Индексация…" : "Добавить"}
+          {uploading ? "Индексация…" : reindexingPath ? "Индексация…" : "Добавить"}
         </button>
 
-        {uploading && (
-          <div className="grid w-full max-w-md gap-2">
-            <p className={`text-center ${mutedTextClass}`}>{uploadMessage}</p>
-            <div className={progressTrackClass}>
-              <div
-                className={progressBarClass}
-                style={{ width: `${Math.round(uploadProgress * 100)}%` }}
-              />
-            </div>
-          </div>
+        {(uploading || reindexingPath !== null) && (
+          <ProgressTicker
+            message={uploading ? uploadMessage : reindexMessage}
+            progress={uploading ? uploadProgress : reindexProgress}
+          />
         )}
 
         {error && <p className={`max-w-md text-center ${alertErrorClass}`}>{error}</p>}
@@ -273,7 +267,7 @@ export function AssetsPage() {
                     </button>
                     <button
                       type="button"
-                      disabled={isReindexing}
+                      disabled={reindexingPath !== null}
                       onClick={() => void onDelete(file.path)}
                       className={`${btnOutlineDangerClass} inline-flex size-9 shrink-0 items-center justify-center p-0`}
                       aria-label={`Удалить ${file.path}`}
@@ -295,17 +289,6 @@ export function AssetsPage() {
                       </svg>
                     </button>
                   </div>
-
-                  {isReindexing && (
-                    <div className="mt-3 grid gap-2">
-                      <div className={progressTrackClass}>
-                        <div
-                          className={progressBarClass}
-                          style={{ width: `${Math.round(reindexProgress * 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
 
                   {isOpen && (
                     <div className="mt-4 border-t border-gray-400 pt-4">

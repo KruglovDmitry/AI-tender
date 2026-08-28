@@ -69,6 +69,29 @@ def _job_to_response(job) -> JobResponse:
     )
 
 
+def _indexing_job_extra(
+    job_id: str, *, progress_start: float, progress_span: float
+) -> dict[str, Any]:
+    progress = job_manager.make_progress(job_id)
+
+    def on_index_progress(phase: str, page: int, total: int, detail: str) -> None:
+        if phase == "start":
+            pct = progress_start
+        elif phase == "persist":
+            pct = progress_start + progress_span * 0.92
+        elif phase == "done":
+            pct = min(progress_start + progress_span, 0.99)
+        elif phase == "scan":
+            pct = progress_start + progress_span * 0.45 * (page / max(total, 1))
+        else:
+            pct = progress_start + progress_span * (
+                0.45 + 0.45 * (page / max(total, 1))
+            )
+        progress(detail, min(max(pct, progress_start), 0.99))
+
+    return {"on_index_progress": on_index_progress}
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -187,6 +210,7 @@ async def upload_assets(
             changed,
             cache_dir=settings.cache_dir,
             settings=settings,
+            extra=_indexing_job_extra(job.id, progress_start=0.35, progress_span=0.6),
         )
         indexed_n = sum(1 for r in results if r.status.value == "indexed")
         skipped_n = sum(1 for r in results if r.status.value == "skipped")
@@ -212,17 +236,20 @@ async def upload_assets(
 def delete_asset(body: DeleteAssetRequest, assets_path: str | None = None) -> dict[str, str]:
     settings = get_settings()
     root = resolve_assets_path(assets_path)
-    remove_asset_from_index(
-        root,
-        settings.cache_dir,
-        body.path,
-        settings.embedding_model,
-        settings.chunk_size,
-        settings.chunk_overlap,
-        device=settings.embedding_device,
-        ocr_enabled=settings.ocr_enabled,
-        ocr_languages=settings.ocr_languages,
-    )
+    try:
+        remove_asset_from_index(
+            root,
+            settings.cache_dir,
+            body.path,
+            settings.embedding_model,
+            settings.chunk_size,
+            settings.chunk_overlap,
+            device=settings.embedding_device,
+            ocr_enabled=settings.ocr_enabled,
+            ocr_languages=settings.ocr_languages,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "deleted", "path": body.path}
 
 
@@ -250,6 +277,7 @@ def reindex_asset(body: ReindexAssetRequest, assets_path: str | None = None) -> 
             [rel],
             cache_dir=settings.cache_dir,
             settings=settings,
+            extra=_indexing_job_extra(job.id, progress_start=0.2, progress_span=0.75),
         )
         indexed_n = sum(1 for r in results if r.status.value == "indexed")
         failed_n = sum(1 for r in results if r.status.value == "failed")
