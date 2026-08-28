@@ -221,6 +221,7 @@ __marimo__/
 
 # Frontend
 ui/node_modules/
+*.tsbuildinfo
 
 assets
 sources
