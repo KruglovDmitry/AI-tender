@@ -20,7 +20,7 @@ from ...models import (
     ProductSource,
 )
 from .persistance import (
-    delete_product_artifacts,
+    embeddings_paths,
     save_product_embeddings,
     save_product_index,
 )
@@ -329,10 +329,12 @@ class AssetVlIndexer:
         if context.cache_dir is None:
             raise ValueError("IndexingContext.cache_dir обязателен")
 
-        delete_product_artifacts(context.cache_dir, index.source_file)
         index.embedding_model = context.embedding_model
         save_product_index(context.cache_dir, index)
         if not index.products:
+            for embed_path in embeddings_paths(context.cache_dir, index.source_file):
+                if embed_path.is_file():
+                    embed_path.unlink()
             return warnings
 
         texts = [

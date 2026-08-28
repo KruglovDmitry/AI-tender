@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteAsset, fetchAssets, fetchProducts, pollJob, uploadAssets } from "../api";
+import {
+  deleteAsset,
+  fetchAssets,
+  fetchProducts,
+  pollJob,
+  reindexAsset,
+  uploadAssets,
+} from "../api";
 import { useSettings } from "../components/SettingsPanel";
 import {
   alertErrorClass,
-  alertWarningClass,
+  assetItemClass,
   btnActionClass,
+  btnIconNeutralClass,
   btnOutlineDangerClass,
-  itemClass,
   mutedTextClass,
   pageActionBarClass,
   progressBarClass,
@@ -26,24 +33,37 @@ export function AssetsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [jobMessage, setJobMessage] = useState("");
-  const [jobProgress, setJobProgress] = useState(0);
+  const [reindexingPath, setReindexingPath] = useState<string | null>(null);
+  const [reindexMessage, setReindexMessage] = useState("");
+  const [reindexProgress, setReindexProgress] = useState(0);
+  const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [productsCache, setProductsCache] = useState<Record<string, ProductDocumentIndex>>({});
   const [loadingProducts, setLoadingProducts] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const reload = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoading(true);
     try {
       const data = await fetchAssets(settings.assetsPath);
-      setFiles(data.files.filter((f) => f.indexed));
+      setFiles(data.files);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!options?.silent) setLoading(false);
     }
   }, [settings.assetsPath]);
+
+  const refreshAsset = useCallback(
+    async (path: string) => {
+      const data = await fetchAssets(settings.assetsPath);
+      const updated = data.files.find((file) => file.path === path);
+      if (!updated) return;
+      setFiles((prev) => prev.map((file) => (file.path === path ? updated : file)));
+    },
+    [settings.assetsPath],
+  );
 
   useEffect(() => {
     void reload();
@@ -73,7 +93,7 @@ export function AssetsPage() {
   };
 
   const onAddClick = () => {
-    if (uploading) return;
+    if (uploading || reindexingPath !== null) return;
     setError(null);
     fileInputRef.current?.click();
   };
@@ -85,13 +105,13 @@ export function AssetsPage() {
 
     setUploading(true);
     setError(null);
-    setJobMessage("Загрузка…");
-    setJobProgress(0);
+    setUploadMessage("Загрузка…");
+    setUploadProgress(0);
     try {
       const job = await uploadAssets(picked, settings.assetsPath);
       await pollJob(job.id, (j) => {
-        setJobProgress(j.progress);
-        setJobMessage(j.message);
+        setUploadProgress(j.progress);
+        setUploadMessage(j.message);
       });
       setProductsCache({});
       setExpanded(null);
@@ -100,13 +120,43 @@ export function AssetsPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
-      setJobMessage("");
-      setJobProgress(0);
+      setUploadMessage("");
+      setUploadProgress(0);
+    }
+  };
+
+  const onReindex = async (path: string) => {
+    if (reindexingPath !== null) return;
+
+    setReindexingPath(path);
+    setError(null);
+    setReindexMessage("Повторная индексация…");
+    setReindexProgress(0);
+    try {
+      const job = await reindexAsset(path, settings.assetsPath);
+      await pollJob(job.id, (j) => {
+        setReindexProgress(j.progress);
+        setReindexMessage(j.message);
+      });
+      setProductsCache((prev) => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
+      await refreshAsset(path);
+      if (expanded === path) {
+        void loadProducts(path);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReindexingPath(null);
+      setReindexMessage("");
+      setReindexProgress(0);
     }
   };
 
   const onDelete = async (path: string) => {
-    if (!confirm(`Удалить ${path}?`)) return;
     setError(null);
     try {
       await deleteAsset(path, settings.assetsPath);
@@ -133,10 +183,10 @@ export function AssetsPage() {
         onChange={(e) => void onFilesPicked(e)}
       />
 
-      <div className={pageActionBarClass}>
+      <div className={`${pageActionBarClass} mb-14`}>
         <button
           type="button"
-          disabled={uploading}
+          disabled={uploading || reindexingPath !== null}
           onClick={onAddClick}
           className={btnActionClass}
         >
@@ -145,11 +195,11 @@ export function AssetsPage() {
 
         {uploading && (
           <div className="grid w-full max-w-md gap-2">
-            <p className={`text-center ${mutedTextClass}`}>{jobMessage}</p>
+            <p className={`text-center ${mutedTextClass}`}>{uploadMessage}</p>
             <div className={progressTrackClass}>
               <div
                 className={progressBarClass}
-                style={{ width: `${Math.round(jobProgress * 100)}%` }}
+                style={{ width: `${Math.round(uploadProgress * 100)}%` }}
               />
             </div>
           </div>
@@ -162,12 +212,14 @@ export function AssetsPage() {
         {loading ? (
           <p className={`text-center ${mutedTextClass}`}>Загрузка…</p>
         ) : (
-          <ul className="grid gap-4">
+          <ul className="grid list-none gap-4 p-0">
             {files.map((file) => {
               const products = productsCache[file.path];
               const isOpen = expanded === file.path;
+              const isReindexing = reindexingPath === file.path;
               return (
-                <li key={file.path} className={itemClass}>
+                <li key={file.path}>
+                  <div className={assetItemClass}>
                   <div className="flex items-start gap-3">
                     <button
                       type="button"
@@ -178,9 +230,14 @@ export function AssetsPage() {
                       <p className="mt-0.5 text-xs text-gray-500">{file.path}</p>
                       <p className={`mt-1 ${mutedTextClass}`}>
                         {[
-                          file.catalog_name,
-                          file.doc_kind,
-                          `${file.product_count} продуктов`,
+                          isReindexing
+                            ? reindexMessage || "Повторная индексация…"
+                            : file.catalog_name,
+                          !isReindexing && file.doc_kind,
+                          !isReindexing &&
+                            (file.indexed
+                              ? `${file.product_count} продуктов`
+                              : "не проиндексирован"),
                         ]
                           .filter(Boolean)
                           .join(" · ")}
@@ -188,31 +245,75 @@ export function AssetsPage() {
                     </button>
                     <button
                       type="button"
+                      disabled={reindexingPath !== null}
+                      onClick={() => void onReindex(file.path)}
+                      className={`${btnIconNeutralClass} size-9 shrink-0 p-0`}
+                      aria-label={`Повторная индексация ${fileName(file.path)}`}
+                      title="Повторная индексация"
+                    >
+                      <svg
+                        className={`size-4 ${isReindexing ? "animate-spin" : ""}`}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.25"
+                        aria-hidden
+                      >
+                        <path
+                          d="M1 4v6h6M23 20v-6h-6"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isReindexing}
                       onClick={() => void onDelete(file.path)}
-                      className={btnOutlineDangerClass}
+                      className={`${btnOutlineDangerClass} inline-flex size-9 shrink-0 items-center justify-center p-0`}
                       aria-label={`Удалить ${file.path}`}
                     >
-                      ✕
+                      <svg
+                        className="size-4"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        aria-hidden
+                      >
+                        <path
+                          d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path d="M10 11v6M14 11v6" strokeLinecap="round" />
+                      </svg>
                     </button>
                   </div>
 
+                  {isReindexing && (
+                    <div className="mt-3 grid gap-2">
+                      <div className={progressTrackClass}>
+                        <div
+                          className={progressBarClass}
+                          style={{ width: `${Math.round(reindexProgress * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {isOpen && (
-                    <div className="mt-4 border-t border-gray-100 pt-4">
+                    <div className="mt-4 border-t border-gray-400 pt-4">
                       {loadingProducts === file.path && !products && (
                         <p className={mutedTextClass}>Загрузка продуктов…</p>
                       )}
                       {products && (
                         <div className="grid gap-4">
-                          {products.warnings.map((w, i) => (
-                            <p key={i} className={alertWarningClass}>
-                              {w}
-                            </p>
-                          ))}
-                          {products.product_pages.length > 0 && (
-                            <p className={`text-xs ${mutedTextClass}`}>
-                              Страницы: {products.product_pages.join(", ")}
-                            </p>
-                          )}
                           <div className="grid gap-3">
                             {products.products.map((product) => (
                               <article
@@ -253,6 +354,7 @@ export function AssetsPage() {
                       )}
                     </div>
                   )}
+                  </div>
                 </li>
               );
             })}

@@ -40,10 +40,12 @@ def embeddings_paths(cache_dir: Path, relative_path: str) -> tuple[Path, Path]:
 def save_product_index(cache_dir: Path, index: ProductDocumentIndex) -> Path:
     path = json_path_for(cache_dir, index.source_file)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        index.model_dump_json(indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    payload = json.dumps(
+        index.model_dump(mode="json"),
+        ensure_ascii=False,
+        indent=2,
     )
+    path.write_text(payload, encoding="utf-8")
     return path
 
 

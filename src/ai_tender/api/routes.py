@@ -43,6 +43,10 @@ class DeleteAssetRequest(BaseModel):
     path: str
 
 
+class ReindexAssetRequest(BaseModel):
+    path: str
+
+
 class JobResponse(BaseModel):
     id: str
     kind: str
@@ -220,6 +224,49 @@ def delete_asset(body: DeleteAssetRequest, assets_path: str | None = None) -> di
         ocr_languages=settings.ocr_languages,
     )
     return {"status": "deleted", "path": body.path}
+
+
+@router.post("/assets/reindex")
+def reindex_asset(body: ReindexAssetRequest, assets_path: str | None = None) -> JobResponse:
+    settings = get_settings()
+    root = resolve_assets_path(assets_path)
+    rel = body.path.replace("\\", "/").lstrip("/")
+    if not rel or ".." in Path(rel).parts:
+        raise HTTPException(status_code=400, detail="Некорректный путь эталона")
+
+    target = (root / rel).resolve()
+    if root.resolve() not in target.parents and target != root.resolve():
+        raise HTTPException(status_code=400, detail="Путь вне каталога эталонов")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Файл эталона не найден")
+
+    job = job_manager.create("assets_reindex")
+
+    def task() -> dict[str, Any]:
+        progress = job_manager.make_progress(job.id)
+        progress(f"VL-индексация «{Path(rel).name}»…", 0.2)
+        results, _ = index_asset_files(
+            root,
+            [rel],
+            cache_dir=settings.cache_dir,
+            settings=settings,
+        )
+        indexed_n = sum(1 for r in results if r.status.value == "indexed")
+        failed_n = sum(1 for r in results if r.status.value == "failed")
+        for result in results:
+            if result.status.value == "failed" and result.message:
+                print(f"[assets reindex] {result.message}", flush=True)
+            for warning in result.details.get("warnings") or []:
+                print(f"[assets reindex] {result.relative_path}: {warning}", flush=True)
+        progress("Готово", 1.0)
+        return {
+            "path": rel,
+            "indexed": indexed_n,
+            "failed": failed_n,
+        }
+
+    job_manager.run_in_background(job.id, task)
+    return _job_to_response(job)
 
 
 @router.post("/analyze")

@@ -10,7 +10,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || response.statusText);
+    let message = text || response.statusText;
+    try {
+      const body = JSON.parse(text) as { detail?: string | { msg?: string }[] };
+      if (typeof body.detail === "string") {
+        message = body.detail;
+      } else if (Array.isArray(body.detail) && body.detail[0]?.msg) {
+        message = body.detail.map((item) => item.msg).filter(Boolean).join("; ");
+      }
+    } catch {
+      /* keep raw text */
+    }
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
@@ -56,6 +67,15 @@ export async function uploadAssets(files: File[], assetsPath?: string): Promise<
   }
   if (assetsPath) form.append("assets_path", assetsPath);
   return request<Job>("/api/assets/upload", { method: "POST", body: form });
+}
+
+export async function reindexAsset(path: string, assetsPath?: string): Promise<Job> {
+  const query = assetsPath ? `?assets_path=${encodeURIComponent(assetsPath)}` : "";
+  return request<Job>(`/api/assets/reindex${query}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
 }
 
 export async function startAnalyze(form: FormData): Promise<Job> {
