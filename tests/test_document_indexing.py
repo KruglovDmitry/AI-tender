@@ -199,3 +199,5 @@ def test_empty_pages_fail_without_products(tmp_path: Path) -> None:
     assert result.status == IndexingStatus.failed
     assert result.details["product_count"] == 0
     assert result.details["product_pages"] == []
+    assert load_product_index(cache, "empty.pdf") is None
+    assert not json_path_for(cache, "empty.pdf").exists()

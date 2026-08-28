@@ -12,6 +12,13 @@ from ...models import ProductDocumentIndex
 JSON_DIR_NAME = "product_json"
 EMBED_DIR_NAME = "product_embeddings"
 
+MIN_PRODUCTS_PER_CATALOG = 1
+
+
+def catalog_is_indexed(index: ProductDocumentIndex | None) -> bool:
+    """Каталог считается проиндексированным только если есть ≥1 продукт."""
+    return index is not None and len(index.products) >= MIN_PRODUCTS_PER_CATALOG
+
 
 def product_json_root(cache_dir: Path) -> Path:
     return cache_dir.expanduser().resolve() / JSON_DIR_NAME

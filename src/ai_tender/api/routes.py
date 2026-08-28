@@ -19,7 +19,10 @@ from ai_tender.services.index_service import (
     scan_assets_files,
 )
 from ai_tender.services.indexing import index_asset_files
-from ai_tender.services.indexing.persistance import load_product_index
+from ai_tender.services.indexing.persistance import (
+    catalog_is_indexed,
+    load_product_index,
+)
 from ai_tender.services.ocr_service import ocr_status
 from ai_tender.services.report_export import report_to_json_bytes, report_to_markdown
 from ai_tender.services.upload_service import (
@@ -139,11 +142,12 @@ def list_assets(assets_path: str | None = None) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for rel in disk_files:
         product_index = load_product_index(settings.cache_dir, rel)
+        indexed = catalog_is_indexed(product_index)
         items.append(
             {
                 "path": rel,
                 "product_count": len(product_index.products) if product_index else 0,
-                "indexed": product_index is not None,
+                "indexed": indexed,
                 "doc_kind": product_index.doc_kind.value if product_index else None,
                 "catalog_name": product_index.catalog_name if product_index else "",
             }

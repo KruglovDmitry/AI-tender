@@ -20,6 +20,8 @@ from ...models import (
     ProductSource,
 )
 from .persistance import (
+    MIN_PRODUCTS_PER_CATALOG,
+    delete_product_artifacts,
     embeddings_paths,
     save_product_embeddings,
     save_product_index,
@@ -96,6 +98,11 @@ PAGE_MERGE_PROMPT = """\
 - Каждый отдельный тип изделия/модуль/артикул = отдельный product.
 - Серия/платформа и её модули — разные products.
 - Поле id не заполняй.
+- ОБЯЗАТЕЛЬНО: если на странице есть таблица моделей, типоразмеры, артикулы или
+  технические характеристики изделий — добавь хотя бы один product в products_add
+  (или дополни через products_patch). Каталог не может остаться пустым, если
+  документ описывает продукцию. Серию/линейку тоже указывай как model, если
+  конкретного артикула на странице нет.
 
 Поля нового product: model, manufacturer, category, canonical_desc, raw_chunk,
 characteristics[], standards[].
@@ -157,12 +164,31 @@ class AssetVlIndexer:
             )
 
         n = len(doc_index.products)
-        status = IndexingStatus.indexed if n else IndexingStatus.failed
-        msg = (
-            f"«{name}» — {n} продукт(ов) (VL, слияние по страницам)"
-            if n
-            else f"«{name}» — продукты не извлечены"
-        )
+        if n < MIN_PRODUCTS_PER_CATALOG:
+            removed = delete_product_artifacts(context.cache_dir, relative_path)
+            if removed:
+                _index_log(relative_path, f"удалены пустые артефакты: {len(removed)} файл(ов)")
+            fail_msg = (
+                f"«{name}» — требуется минимум {MIN_PRODUCTS_PER_CATALOG} продукт(ов), "
+                f"извлечено {n}. Переиндексируйте после исправления VL."
+            )
+            warnings.append(fail_msg)
+            return IndexingResult(
+                relative_path=relative_path,
+                doc_kind=self.kind,
+                status=IndexingStatus.failed,
+                message=fail_msg,
+                details={
+                    "product_count": n,
+                    "catalog_name": doc_index.catalog_name,
+                    "product_pages": list(doc_index.product_pages),
+                    "warnings": warnings,
+                    "min_products_required": MIN_PRODUCTS_PER_CATALOG,
+                },
+            )
+
+        status = IndexingStatus.indexed
+        msg = f"«{name}» — {n} продукт(ов) (VL, слияние по страницам)"
         if doc_index.catalog_name:
             msg += f", документ «{doc_index.catalog_name}»"
         if doc_index.product_pages:
@@ -412,13 +438,15 @@ class AssetVlIndexer:
 
         index.embedding_model = context.embedding_model
         rel = index.source_file
+        if len(index.products) < MIN_PRODUCTS_PER_CATALOG:
+            delete_product_artifacts(context.cache_dir, rel)
+            warnings.append(
+                f"Каталог не сохранён: требуется минимум {MIN_PRODUCTS_PER_CATALOG} продукт(ов)"
+            )
+            return warnings
+
         _index_log(rel, f"persist: JSON + embeddings для {len(index.products)} продуктов")
         save_product_index(context.cache_dir, index)
-        if not index.products:
-            for embed_path in embeddings_paths(context.cache_dir, index.source_file):
-                if embed_path.is_file():
-                    embed_path.unlink()
-            return warnings
 
         texts = [
             (p.canonical_desc or p.model or p.raw_chunk or p.id).strip() or p.id
