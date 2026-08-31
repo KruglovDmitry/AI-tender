@@ -14,7 +14,6 @@ import {
 import type { AppConfig } from "../types";
 
 export interface SettingsState {
-  llmProvider: string;
   ocrEnabled: boolean;
   maxReqs: number;
   assetsPath: string;
@@ -36,7 +35,6 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settings, setSettings] = useState<SettingsState>({
-    llmProvider: "deepseek",
     ocrEnabled: true,
     maxReqs: 10,
     assetsPath: "",
@@ -53,7 +51,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setConfig(cfg);
       setSettings((prev) => ({
         ...prev,
-        llmProvider: cfg.llm_provider,
         ocrEnabled: cfg.ocr_enabled,
         maxReqs: cfg.max_reqs_per_scope_item,
         assetsPath: cfg.default_assets_path,
@@ -87,19 +84,35 @@ export function SettingsPanel() {
 
   return (
     <div className="grid gap-4">
-        <div>
-          <label className={labelClass} htmlFor="llm-provider">
-            LLM-провайдер
+        <div className="flex items-center gap-2">
+          <input
+            id="ocr-enabled"
+            type="checkbox"
+            checked={settings.ocrEnabled}
+            onChange={(e) => setSettings((s) => ({ ...s, ocrEnabled: e.target.checked }))}
+            className="size-4 rounded border-gray-300 text-blue-800 focus:ring-blue-800/30"
+          />
+          <label htmlFor="ocr-enabled" className="text-sm text-gray-700">
+            OCR для сканов PDF
           </label>
-          <select
-            id="llm-provider"
-            className={selectClass}
-            value={settings.llmProvider}
-            onChange={(e) => setSettings((s) => ({ ...s, llmProvider: e.target.value }))}
-          >
-            <option value="deepseek">DeepSeek</option>
-            <option value="openai">Local</option>
-          </select>
+        </div>
+
+        {!ocrOk && settings.ocrEnabled && <p className={alertWarningClass}>{ocrHint}</p>}
+
+        <div>
+          <label className={labelClass} htmlFor="max-reqs">
+            Макс. требований на позицию: {settings.maxReqs}
+          </label>
+          <input
+            id="max-reqs"
+            type="range"
+            min={1}
+            max={20}
+            value={settings.maxReqs}
+            onChange={(e) =>
+              setSettings((s) => ({ ...s, maxReqs: Number(e.target.value) }))
+            }
+          />
         </div>
 
         <div>
@@ -143,37 +156,6 @@ export function SettingsPanel() {
             />
           </div>
         )}
-
-        <div className="flex items-center gap-2">
-          <input
-            id="ocr-enabled"
-            type="checkbox"
-            checked={settings.ocrEnabled}
-            onChange={(e) => setSettings((s) => ({ ...s, ocrEnabled: e.target.checked }))}
-            className="size-4 rounded border-gray-300 text-blue-800 focus:ring-blue-800/30"
-          />
-          <label htmlFor="ocr-enabled" className="text-sm text-gray-700">
-            OCR для сканов PDF
-          </label>
-        </div>
-
-        {!ocrOk && settings.ocrEnabled && <p className={alertWarningClass}>{ocrHint}</p>}
-
-        <div>
-          <label className={labelClass} htmlFor="max-reqs">
-            Макс. требований на позицию: {settings.maxReqs}
-          </label>
-          <input
-            id="max-reqs"
-            type="range"
-            min={1}
-            max={20}
-            value={settings.maxReqs}
-            onChange={(e) =>
-              setSettings((s) => ({ ...s, maxReqs: Number(e.target.value) }))
-            }
-          />
-        </div>
 
         <div>
           <label className={labelClass} htmlFor="report-format">

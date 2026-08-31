@@ -1,6 +1,8 @@
 export interface AppConfig {
   llm_provider: string;
   llm_model: string;
+  local_llm_configured?: boolean;
+  local_llm_base_url?: string | null;
   ocr_enabled: boolean;
   max_reqs_per_scope_item: number;
   embedding_model: string;

@@ -12,7 +12,9 @@ from .index_service import configure_embeddings
 from .indexing.persistance import (
     load_product_embeddings,
     product_json_root,
+    save_product_embeddings,
 )
+from .product_embedding import embedding_text
 
 
 @dataclass
@@ -38,9 +40,7 @@ class VlCatalog:
         return len(self.products)
 
 
-def embedding_text(product: Product) -> str:
-    """Текст для эмбеддинга — как при persist() в VL-индексации."""
-    return (product.canonical_desc or product.model or product.raw_chunk or product.id).strip() or product.id
+from .product_embedding import embedding_text
 
 
 def format_product_quote(
@@ -223,3 +223,51 @@ def search_catalog(
             )
         )
     return hits
+
+
+def reembed_vl_catalogs(
+    cache_dir: Path,
+    *,
+    embedding_model: str,
+    device: str | None = None,
+) -> list[str]:
+    """Пересчитывает product_embeddings из product_json без повторного VL-парсинга."""
+    root = product_json_root(cache_dir)
+    if not root.is_dir():
+        return ["VL-каталог не найден (нет product_json/)"]
+
+    embedder = configure_embeddings(embedding_model, device)
+    messages: list[str] = []
+
+    for json_path in sorted(root.rglob("*.json")):
+        try:
+            doc_index = ProductDocumentIndex.model_validate_json(
+                json_path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            messages.append(f"Пропуск {json_path.name}: {exc}")
+            continue
+        if not doc_index.products:
+            continue
+
+        texts = [embedding_text(p) for p in doc_index.products]
+        ids = [p.id for p in doc_index.products]
+        if hasattr(embedder, "get_text_embedding_batch"):
+            vectors = np.array(embedder.get_text_embedding_batch(texts), dtype=np.float32)
+        else:
+            vectors = np.array(
+                [embedder.get_text_embedding(t) for t in texts],
+                dtype=np.float32,
+            )
+        save_product_embeddings(
+            cache_dir,
+            doc_index.source_file,
+            ids,
+            vectors,
+            embedding_model=embedding_model,
+        )
+        messages.append(
+            f"Переиндексировано: {doc_index.source_file} ({len(ids)} продуктов)"
+        )
+
+    return messages

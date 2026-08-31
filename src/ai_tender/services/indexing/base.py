@@ -19,6 +19,7 @@ from ...models import (
     ProductDocumentIndex,
     ProductSource,
 )
+from ..product_embedding import embedding_text
 from .persistance import (
     MIN_PRODUCTS_PER_CATALOG,
     delete_product_artifacts,
@@ -448,10 +449,7 @@ class AssetVlIndexer:
         _index_log(rel, f"persist: JSON + embeddings для {len(index.products)} продуктов")
         save_product_index(context.cache_dir, index)
 
-        texts = [
-            (p.canonical_desc or p.model or p.raw_chunk or p.id).strip() or p.id
-            for p in index.products
-        ]
+        texts = [embedding_text(p) for p in index.products]
         ids = [p.id for p in index.products]
         vectors = self.embed_texts(texts, context)
         save_product_embeddings(

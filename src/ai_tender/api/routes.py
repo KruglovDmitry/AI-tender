@@ -12,7 +12,12 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ai_tender.graph import analyze
-from ai_tender.models import AnalysisReport, get_settings
+from ai_tender.models import (
+    AnalysisReport,
+    get_settings,
+    resolve_llm_provider,
+    settings_for_llm_provider,
+)
 from ai_tender.services.index_service import (
     get_assets_index_status,
     remove_asset_from_index,
@@ -106,6 +111,10 @@ def get_config() -> dict[str, Any]:
     return {
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
+        "local_llm_configured": bool(os.getenv("LOCAL_LLM_BASE_URL")),
+        "local_llm_base_url": settings.local_llm_base_url
+        if os.getenv("LOCAL_LLM_BASE_URL")
+        else None,
         "ocr_enabled": settings.ocr_enabled,
         "max_reqs_per_scope_item": settings.max_reqs_per_scope_item,
         "embedding_model": settings.embedding_model,
@@ -316,10 +325,16 @@ async def start_analyze(
     if not assets_root.is_dir():
         raise HTTPException(status_code=400, detail="Каталог эталонов не существует")
 
-    provider = llm_provider.lower().strip()
+    provider = resolve_llm_provider(llm_provider)
     if provider == "deepseek":
         if not os.getenv("DEEPSEEK_API_KEY"):
             raise HTTPException(status_code=400, detail="Не задан DEEPSEEK_API_KEY в окружении")
+    elif provider == "local":
+        if not os.getenv("LOCAL_LLM_BASE_URL"):
+            raise HTTPException(
+                status_code=400,
+                detail="Не задан LOCAL_LLM_BASE_URL для локального LLM",
+            )
     elif not os.getenv("OPENAI_API_KEY"):
         os.environ["OPENAI_API_KEY"] = "EMPTY"
 
@@ -335,9 +350,8 @@ async def start_analyze(
 
     def task() -> dict[str, Any]:
         progress = job_manager.make_progress(job.id)
-        runtime_settings = settings.model_copy(
+        runtime_settings = settings_for_llm_provider(provider, settings).model_copy(
             update={
-                "llm_provider": provider,
                 "ocr_enabled": ocr_enabled,
                 "max_reqs_per_scope_item": max_reqs_per_scope_item,
             }

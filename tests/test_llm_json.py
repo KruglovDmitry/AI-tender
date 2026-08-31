@@ -29,6 +29,19 @@ def test_try_parse_llm_json_returns_none_on_garbage() -> None:
     assert try_parse_llm_json("not json at all {") is None
 
 
+def test_salvage_match_json_partial() -> None:
+    raw = (
+        '{"matched": true, "status": "matched", "required_product": "ABC-100", '
+        '"product_name": "Модель X-200", '
+        '"explanation": "Аналог указан в каталоге", "confidence": 0.85'
+    )
+    data = try_parse_llm_json(raw)
+    assert data is not None
+    assert data["matched"] is True
+    assert data["status"] == "matched"
+    assert data["product_name"] == "Модель X-200"
+
+
 def test_parse_llm_json_still_raises_on_unfixable() -> None:
     try:
         parse_llm_json('{"items": [{"text": "broken "quote"}]}')

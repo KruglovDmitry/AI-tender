@@ -209,10 +209,14 @@ class Settings(BaseSettings):
     # Embeddings (локально) + LLM (API)
     embedding_model: str = "BAAI/bge-m3"
     embedding_device: str | None = None
-    llm_provider: str = "deepseek"  # deepseek | openai
+    llm_provider: str = "deepseek"  # deepseek | openai | local
     llm_model: str = "deepseek-chat"
+    llm_timeout_sec: float = 180.0
+    llm_max_output_tokens: int = 1024
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_base_url: str = "https://api.openai.com/v1"
+    # Анализ тендера через OpenAI-compatible сервер в LAN (vLLM, llama.cpp и т.п.).
+    local_llm_base_url: str = "http://127.0.0.1:8000/v1"
 
     # Vision-LLM для постраничной индексации эталонов (OpenAI-compatible, напр. vLLM).
     # Можно задать AI_TENDER_VL_* или LOCAL_LLM_* (см. get_settings).
@@ -254,12 +258,16 @@ class Settings(BaseSettings):
 
 
 def get_settings() -> Settings:
-    """Загружает Settings; LOCAL_LLM_* подставляются в VL, если AI_TENDER_VL_* не заданы."""
+    """Загружает Settings; LOCAL_LLM_* подставляются в VL и (при local) в LLM анализа."""
     settings = Settings()
     updates: dict[str, Any] = {}
 
+    local_url = os.getenv("LOCAL_LLM_BASE_URL")
+    local_timeout = os.getenv("LOCAL_LLM_TIMEOUT_SEC")
+    if local_url:
+        updates["local_llm_base_url"] = _openai_compatible_base_url(local_url)
+
     if "AI_TENDER_VL_BASE_URL" not in os.environ:
-        local_url = os.getenv("LOCAL_LLM_BASE_URL")
         if local_url:
             updates["vl_base_url"] = _openai_compatible_base_url(local_url)
     else:
@@ -271,7 +279,6 @@ def get_settings() -> Settings:
             updates["vl_model"] = local_model.strip()
 
     if "AI_TENDER_VL_TIMEOUT_SEC" not in os.environ:
-        local_timeout = os.getenv("LOCAL_LLM_TIMEOUT_SEC")
         if local_timeout:
             try:
                 updates["vl_timeout_sec"] = float(local_timeout)
@@ -286,7 +293,74 @@ def get_settings() -> Settings:
             except ValueError:
                 pass
 
+    provider = (
+        os.getenv("AI_TENDER_LLM_PROVIDER") or settings.llm_provider
+    ).lower().strip()
+    if provider == "local" and local_url:
+        updates["llm_provider"] = "local"
+        analysis_model = os.getenv("LOCAL_LLM_ANALYSIS_MODEL") or os.getenv(
+            "LOCAL_LLM_DEFAULT_MODEL"
+        )
+        if analysis_model:
+            updates["llm_model"] = analysis_model.strip()
+        if "AI_TENDER_LLM_TIMEOUT_SEC" not in os.environ and local_timeout:
+            try:
+                updates["llm_timeout_sec"] = float(local_timeout)
+            except ValueError:
+                pass
+        local_max = os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS")
+        if local_max and "AI_TENDER_LLM_MAX_OUTPUT_TOKENS" not in os.environ:
+            try:
+                updates["llm_max_output_tokens"] = min(int(local_max), 2048)
+            except ValueError:
+                pass
+
     return settings.model_copy(update=updates) if updates else settings
+
+
+def resolve_llm_provider(provider: str) -> str:
+    """Нормализует провайдера из UI/API; openai+LOCAL_LLM → local."""
+    name = (provider or "deepseek").lower().strip()
+    if name in {"local", "openai"} and os.getenv("LOCAL_LLM_BASE_URL"):
+        return "local"
+    return name
+
+
+def settings_for_llm_provider(
+    provider: str,
+    base: Settings | None = None,
+) -> Settings:
+    """Settings для конкретного запуска анализа (UI может переопределить провайдера)."""
+    resolved = resolve_llm_provider(provider)
+    settings = (base or get_settings()).model_copy(update={"llm_provider": resolved})
+    if resolved != "local":
+        return settings
+
+    updates: dict[str, Any] = {"llm_provider": "local"}
+    local_url = os.getenv("LOCAL_LLM_BASE_URL")
+    if local_url:
+        updates["local_llm_base_url"] = _openai_compatible_base_url(local_url)
+    analysis_model = os.getenv("LOCAL_LLM_ANALYSIS_MODEL") or os.getenv(
+        "LOCAL_LLM_DEFAULT_MODEL"
+    )
+    if analysis_model:
+        updates["llm_model"] = analysis_model.strip()
+    local_timeout = os.getenv("LOCAL_LLM_TIMEOUT_SEC")
+    if local_timeout:
+        try:
+            updates["llm_timeout_sec"] = float(local_timeout)
+        except ValueError:
+            pass
+    local_max = os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS")
+    if local_max:
+        try:
+            updates["llm_max_output_tokens"] = min(int(local_max), 2048)
+        except ValueError:
+            pass
+    # vLLM с max-num-seqs=1: параллельные complete только в очередь.
+    updates["requirements_parallelism"] = min(settings.requirements_parallelism, 1)
+    updates["match_parallelism"] = min(settings.match_parallelism, 1)
+    return settings.model_copy(update=updates)
 
 
 ProgressCallback = Callable[[str, float], None]

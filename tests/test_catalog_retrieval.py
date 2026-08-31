@@ -9,14 +9,34 @@ from ai_tender.services.catalog_retrieval import (
 )
 
 
-def test_embedding_text_prefers_canonical_desc() -> None:
+def test_embedding_text_includes_model_and_characteristics() -> None:
     product = Product(
         id="a",
         model="SR33020",
         canonical_desc="ИБП 20 кВА",
         raw_chunk="chunk",
+        characteristics=["10 кВА", "3/3 фазы"],
     )
-    assert embedding_text(product) == "ИБП 20 кВА"
+    text = embedding_text(product)
+    assert "SR33020" in text
+    assert "ИБП 20 кВА" in text
+    assert "10 кВА" in text
+
+
+def test_embedding_text_includes_analog_in_characteristics() -> None:
+    product = Product(
+        id="p1",
+        model="Преобразователь интерфейса X-200",
+        category="устройство для автоматизации",
+        canonical_desc="Преобразователь интерфейса для обмена данными по промышленным протоколам.",
+        characteristics=[
+            "Полный аналог типа ABC-100 (по потребности)",
+            "Скорость передачи до 115 200 бит/с",
+        ],
+    )
+    text = embedding_text(product)
+    assert "ABC-100" in text
+    assert "Преобразователь интерфейса X-200" in text
 
 
 def test_search_catalog_returns_top_by_cosine(monkeypatch) -> None:

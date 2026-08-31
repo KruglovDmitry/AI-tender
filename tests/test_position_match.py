@@ -4,6 +4,9 @@ from ai_tender.nodes.scope import scope_has_detailed_list
 from ai_tender.models import Evidence, ExtractedRequirement, PositionMatchStatus, Product, ScopePositionMatch
 from ai_tender.nodes.common import cap_evidence_per_file, dedupe_evidence_by_file
 from ai_tender.nodes.match import (
+    _compact_hits_for_llm,
+    _pick_best_candidate,
+    _CandidateEval,
     match_scope_position,
     position_to_query_text,
     product_name_in_hits,
@@ -13,6 +16,75 @@ from ai_tender.nodes.verdict import build_tender_verdict
 
 def test_scope_has_detailed_list() -> None:
     assert not scope_has_detailed_list([])
+
+
+def test_compact_hits_for_llm_truncates_and_limits() -> None:
+    long_quote = "x" * 900
+    hits = [
+        Evidence(file=f"f{i}.pdf", location="1", quote=long_quote, score=0.9 - i * 0.1)
+        for i in range(8)
+    ]
+    compact = _compact_hits_for_llm(hits, max_hits=5, max_quote=420)
+    assert len(compact) == 5
+    assert len(compact[0]["quote"]) <= 420
+    assert compact[0]["file"] == "f0.pdf"
+
+
+def test_pick_best_candidate_prefers_matched_over_none() -> None:
+    hit_a = Evidence(file="a.pdf", location="1", quote="Модель A", score=0.9)
+    hit_b = Evidence(file="b.pdf", location="1", quote="Модель B", score=0.5)
+    candidates = [
+        _CandidateEval(
+            hit=hit_b,
+            fits=False,
+            status=PositionMatchStatus.none,
+            product_name="",
+            explanation="нет",
+            confidence=0.9,
+        ),
+        _CandidateEval(
+            hit=hit_a,
+            fits=True,
+            status=PositionMatchStatus.matched,
+            product_name="Модель A",
+            explanation="подходит",
+            confidence=0.7,
+        ),
+    ]
+    best = _pick_best_candidate(candidates)
+    assert best is not None
+    assert best.product_name == "Модель A"
+
+
+def test_match_picks_best_among_candidates() -> None:
+    llm = MagicMock()
+    llm.complete.side_effect = [
+        '{"fits": false, "status": "none", "product_name": "", "explanation": "нет", "confidence": 0.1}',
+        '{"fits": true, "status": "matched", "product_name": "Модель B-100", '
+        '"explanation": "Подходит по классу изделия.", "confidence": 0.85}',
+    ]
+    hits = [
+        Evidence(file="a.pdf", location="1", quote="Модель: MAC9", score=0.4),
+        Evidence(
+            file="b.pdf",
+            location="4",
+            quote="Модель: Модель B-100\nПреобразователь интерфейса",
+            score=0.47,
+        ),
+    ]
+    match = match_scope_position(
+        llm,
+        scope_item={"name": "Преобразователь ABC-100", "qty": 24, "unit": "шт."},
+        requirements=[],
+        asset_hits=hits,
+    )
+    assert match.status == PositionMatchStatus.matched
+    assert match.product_name == "Модель B-100"
+    assert match.required_product == "ABC-100"
+    assert llm.complete.call_count == 2
+
+
+def test_scope_has_detailed_list_qty() -> None:
     assert not scope_has_detailed_list([{"name": "титул", "qty": None}])
     assert scope_has_detailed_list([{"name": "позиция А", "qty": 24}])
     assert scope_has_detailed_list([{"name": "a"}, {"name": "b"}])
@@ -95,8 +167,7 @@ def test_match_scope_position_no_hits() -> None:
 def test_match_scope_position_parses_llm() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": true, "status": "matched", '
-        '"required_product": "Модель-10 или аналог", '
+        '{"fits": true, "status": "matched", '
         '"product_name": "Модель-10", '
         '"explanation": "Модель подходит по напряжению.", "confidence": 0.8}'
     )
@@ -108,7 +179,6 @@ def test_match_scope_position_parses_llm() -> None:
         asset_hits=[hit],
     )
     assert match.status == PositionMatchStatus.matched
-    assert match.required_product == "Модель-10 или аналог"
     assert match.product_name == "Модель-10"
     assert "напряжению" in match.explanation
 
@@ -116,8 +186,8 @@ def test_match_scope_position_parses_llm() -> None:
 def test_match_scope_position_keeps_required_when_none() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": false, "status": "none", '
-        '"required_product": "Тип X", "product_name": "Тип X", '
+        '{"fits": false, "status": "none", '
+        '"product_name": "Тип X", '
         '"explanation": "В эталоне нет подтверждения.", "confidence": 0.2}'
     )
     hit = Evidence(file="asset.pdf", location="стр. 1", quote="другая серия")
@@ -128,15 +198,14 @@ def test_match_scope_position_keeps_required_when_none() -> None:
         asset_hits=[hit],
     )
     assert match.status == PositionMatchStatus.none
-    assert match.required_product == "Тип X"
     assert match.product_name == ""
 
 
 def test_empty_product_name_forces_none_from_partial() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": true, "status": "partial", '
-        '"required_product": "CHR 240-12-E-100", "product_name": "", '
+        '{"fits": true, "status": "partial", '
+        '"product_name": "", '
         '"explanation": "В эталоне нет конкретной модели.", "confidence": 0.1}'
     )
     hit = Evidence(file="asset.pdf", location="стр. 1", quote="зарядное устройство")
@@ -154,8 +223,8 @@ def test_empty_product_name_forces_none_from_partial() -> None:
 def test_empty_product_name_forces_none_from_matched() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": true, "status": "matched", '
-        '"required_product": "OPL/R ECO LED 595 4000R", "product_name": "", '
+        '{"fits": true, "status": "matched", '
+        '"product_name": "", '
         '"explanation": "В позиции указана модель.", "confidence": 0.9}'
     )
     hit = Evidence(file="asset.pdf", location="стр. 1", quote="светильник светодиодный")
@@ -183,8 +252,7 @@ def test_product_name_in_hits_accepts_sku_from_quote() -> None:
 def test_ungrounded_product_name_from_tender_becomes_none() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": true, "status": "matched", '
-        '"required_product": "ERO11-K01-16-DC", '
+        '{"fits": true, "status": "matched", '
         '"product_name": "ERO11-K01-16-DC", '
         '"explanation": "Артикул указан в требованиях.", "confidence": 1.0}'
     )
@@ -196,7 +264,6 @@ def test_ungrounded_product_name_from_tender_becomes_none() -> None:
         asset_hits=[hit],
     )
     assert match.status == PositionMatchStatus.none
-    assert match.required_product == "ERO11-K01-16-DC"
     assert match.product_name == ""
 
 
@@ -218,7 +285,7 @@ def test_match_scope_position_bad_json_becomes_none() -> None:
 def test_match_matched_true_with_none_status_becomes_partial() -> None:
     llm = MagicMock()
     llm.complete.return_value = (
-        '{"matched": true, "status": "none", "product_name": "Серия A", '
+        '{"fits": true, "status": "none", "product_name": "Серия A", '
         '"explanation": "Основное изделие есть, комплектующие не подтверждены.", '
         '"confidence": 0.6}'
     )

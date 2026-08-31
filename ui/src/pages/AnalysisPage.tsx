@@ -11,7 +11,7 @@ import {
 } from "../lib/styles";
 
 export function AnalysisPage() {
-  const { settings } = useSettings();
+  const { config, settings } = useSettings();
   const { running, progress, status, error, report, runAnalyze, clearReport, clearError } =
     useAnalysis();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -19,7 +19,7 @@ export function AnalysisPage() {
 
   const buildForm = (uploadFiles: File[]) => {
     const form = new FormData();
-    form.append("llm_provider", settings.llmProvider);
+    form.append("llm_provider", config?.llm_provider ?? "local");
     form.append("ocr_enabled", String(settings.ocrEnabled));
     form.append("max_reqs_per_scope_item", String(settings.maxReqs));
     form.append("tender_source", settings.tenderSource);

@@ -34,7 +34,7 @@ export const pageActionBarClass =
   "mx-auto flex w-full max-w-3xl flex-col items-center gap-4";
 
 export const assetItemClass =
-  "rounded-xl border border-gray-300/80 bg-white/90 p-4 shadow-sm backdrop-blur-sm";
+  "rounded-md border border-gray-300 bg-white/90 p-4 shadow-sm backdrop-blur-sm";
 
 export const sectionClass = "mx-auto w-full max-w-3xl";
 

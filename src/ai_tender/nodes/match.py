@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Any
 
 from llama_index.core.llms import LLM
@@ -28,61 +30,76 @@ from ..providers import complete_llm_json
 from .common import progress
 
 
-POSITION_MATCH_SCHEMA_HINT = """
-Верни ТОЛЬКО JSON-объект:
-{
-  "matched": true|false,
-  "status": "matched|partial|none",
-  "required_product": "конкретная модель/тип из тендера (position/requirements) или пустая строка",
-  "product_name": "подобранная модель/серия из цитат эталона или пустая строка",
-  "explanation": "1-2 предложения: почему подходит или почему нет",
-  "confidence": 0.0..1.0
-}
+POSITION_MATCH_FEW_SHOT = """
+Пример:
+Вход:
+{"position": {"name": "BRD-X200", "qty": 10, "unit": "шт."}, "requirements": [],
+ "catalog_product": {"file": "catalog.pdf", "location": "стр. 2", "model": "Преобразователь интерфейса P-100",
+ "quote": "Модель: Преобразователь интерфейса P-100\\nОписание: шлюз RS-485 - Ethernet.\\nХарактеристики: Полный аналог BRD-X200/210 (по потребности); монтаж на DIN-рейку"}}
+Выход:
+{"fits": true, "status": "matched", "product_name": "Преобразователь интерфейса P-100",
+ "explanation": "В характеристиках указан полный аналог BRD-X200 — изделие подходит.", "confidence": 0.9}
+""".strip()
+
+POSITION_MATCH_PROMPT_HINT = f"""
+Верни ТОЛЬКО JSON:
+{{"fits": true|false, "status": "matched|partial|none", "product_name": "...",
+ "explanation": "...", "confidence": 0.0..1.0}}
 
 Правила:
-- Опирайся ТОЛЬКО на position, requirements и asset_hits (описания продуктов из VL-каталога).
-- required_product и product_name — РАЗНЫЕ поля, не смешивай источники.
-- required_product: заполняй ТОЛЬКО если в названии позиции или в требованиях явно
-  указано конкретное обозначение/тип/модель того, что нужно купить
-  (в т.ч. формулировки «тип X или аналог»). Пиши кратко обозначение, без «или аналог».
-  Если в тендере только обобщённое описание без конкретной модели — оставь "".
-- product_name: заполняй ТОЛЬКО из asset_hits (поле «Модель» или текст описания каталога).
-  Предпочтительно полный артикул/модель, а не только имя серии.
-  Пример: «SR33020-6x9», а не «SR33».
-  Серию ставь, только если в описаниях нет конкретной строки модели.
-- Выбор кандидата: если в asset_hits несколько моделей одной серии,
-  выбери ту, чьи характеристики ближе к требованиям именно этой позиции.
-  Не бери заведомо несовместимый ряд, если есть ближе.
-  Если часть requirements явно про другое изделие/другую строку перечня —
-  игнорируй их при подборе, не отвергай из‑за них подходящий аналог.
-- Аналог разрешён только того же класса изделия (источник питания к источнику питания,
-  зарядное к зарядному, розетка к розетке). Чужой тип в тендере («тип X или аналог»)
-  не обязан встречаться в эталоне — подбирай нашу модель того же класса из asset_hits.
-- Запрещено подменять класс: внутренний узел другого изделия (например зарядка
-  в составе ИБП) — это не позиция «зарядное устройство».
-- product_name обязан буквально встречаться в одном из описаний asset_hits
-  (артикул/модель как в тексте). Если в описаниях этого нет — product_name=""
-  и status=none. Не копируй required_product из тендера.
-- matched=true и status=matched|partial допустимы ТОЛЬКО если product_name непустой.
-  Иначе matched=false и status=none.
-- required_product сам по себе НИКОГДА не даёт matched/partial.
-- Одно лишь упоминание категории без конкретной модели/серии в цитатах → status=none.
-- status=matched — конкретное изделие из эталона закрывает позицию (как аналог или
-  как то же обозначение) и ключевые требования подтверждены цитатами.
-- status=partial — конкретное изделие из эталона есть, но покрытие неполное
-  (часть требований/комплектующих не подтверждена).
-- Если позиция — комплект, а в эталоне подтверждено только основное изделие —
-  status=partial, matched=true при непустом product_name.
-- status=none — в цитатах нет конкретного изделия нашего каталога по этой позиции.
+- Оцени ТОЛЬКО один catalog_product в ЗАДАНИИ относительно position/requirements.
+- product_name — модель/артикул из catalog_product (поле model или цитата), не обозначение из тендера.
+- fits=true и status matched|partial только если product_name непустой и встречается в catalog_product.
+- Изделие должно быть того же класса/назначения, что и позиция перечня.
 
-Явное обозначение в предмете/позиции закупки:
-- Совпадение кода тендера с линейкой в эталоне усиливает уверенность (можно matched).
-- Если кода тендера в эталоне нет, но есть конкретный аналог (серия/модель в цитате)
-  того же типа изделия — это тоже подбор, обычно partial, не none.
-- Без непустого product_name из эталона код в тендере НЕ даёт matched/partial.
-- Опции в коде изделия не переводи в partial только из‑за отсутствия отдельной
-  цитаты — если само изделие уже подобрано из эталона.
+ВАЖНО: В характеристиках catalog_product может быть явное указание
+«Полный аналог XXX» (или аналогичная формулировка) — это означает, что продукт ПОДХОДИТ.
+Если XXX совпадает с требуемым обозначением из position/requirements — приоритет: следовать
+этому указанию; ставь fits=true, status=matched (или partial при неполном покрытии требований).
+
+{POSITION_MATCH_FEW_SHOT}
+
+- Если не подходит — fits=false, status=none, product_name="".
 """.strip()
+
+# Сколько кандидатов из retrieval оценивать отдельными LLM-запросами.
+MATCH_LLM_EVAL_MAX = 8
+# Полная цитата одного продукта в промпте (vLLM 8192 хватает на 1 продукт).
+MATCH_LLM_PRODUCT_QUOTE_CHARS = 1600
+
+
+@dataclass
+class _CandidateEval:
+    hit: Evidence
+    fits: bool
+    status: PositionMatchStatus
+    product_name: str
+    explanation: str
+    confidence: float
+    llm_calls: int = 0
+
+
+def _compact_hits_for_llm(
+    asset_hits: list[Evidence],
+    *,
+    max_hits: int = MATCH_LLM_EVAL_MAX,
+    max_quote: int = MATCH_LLM_PRODUCT_QUOTE_CHARS,
+) -> list[dict[str, Any]]:
+    """Укороченные хиты (legacy helper для тестов)."""
+    compact: list[dict[str, Any]] = []
+    for hit in asset_hits[:max_hits]:
+        quote = (hit.quote or "").strip()
+        if len(quote) > max_quote:
+            quote = quote[: max_quote - 1] + "…"
+        compact.append(
+            {
+                "file": hit.file,
+                "location": hit.location,
+                "score": hit.score,
+                "quote": quote,
+            }
+        )
+    return compact
 
 
 def _normalize_ground_text(text: str) -> str:
@@ -117,6 +134,212 @@ def _stable_requirements(requirements: list[ExtractedRequirement],) -> list[Extr
     )
 
 
+def _looks_like_product_designation(text: str) -> bool:
+    t = text.strip()
+    if len(t) < 4:
+        return False
+    if re.search(r"\b[A-Z0-9]{2,}[A-Z0-9/-]*\b", t) and re.search(r"\d", t):
+        return True
+    return False
+
+
+def _extract_designation_from_scope_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        return ""
+    words = name.split()
+    for i, word in enumerate(words):
+        if re.search(r"[A-Z]", word) or (
+            re.search(r"\d", word) and re.search(r"[A-Za-z]", word)
+        ):
+            candidate = " ".join(words[i:])
+            if _looks_like_product_designation(candidate):
+                return candidate
+    if _looks_like_product_designation(name):
+        return name
+    return ""
+
+
+def _infer_required_product(
+    scope_name: str,
+    requirements: list[ExtractedRequirement],
+) -> str:
+    for req in requirements:
+        if req.kind == "product" and (req.text or "").strip():
+            text = req.text.strip()
+            lowered = text.lower()
+            if "или аналог" in lowered:
+                return text[: lowered.index("или аналог")].strip(" ,—–-")
+            return text
+    return _extract_designation_from_scope_name(scope_name)
+
+
+def _product_quote_for_llm(hit: Evidence, *, max_chars: int = MATCH_LLM_PRODUCT_QUOTE_CHARS) -> str:
+    quote = (hit.quote or "").strip()
+    if len(quote) <= max_chars:
+        return quote
+    return quote[: max_chars - 1] + "…"
+
+
+def _status_rank(status: PositionMatchStatus) -> int:
+    return {
+        PositionMatchStatus.matched: 2,
+        PositionMatchStatus.partial: 1,
+        PositionMatchStatus.none: 0,
+    }.get(status, 0)
+
+
+def _parse_candidate_evaluation(
+    data: dict[str, Any] | None,
+    hit: Evidence,
+) -> _CandidateEval | None:
+    if not data:
+        return None
+    status_raw = str(data.get("status") or "").strip().lower()
+    fits = bool(data.get("fits", data.get("matched", False)))
+    try:
+        status = PositionMatchStatus(status_raw)
+    except ValueError:
+        status = PositionMatchStatus.matched if fits else PositionMatchStatus.none
+    if fits and status == PositionMatchStatus.none:
+        status = PositionMatchStatus.partial
+    if not fits and status != PositionMatchStatus.none:
+        status = PositionMatchStatus.none
+
+    product_name = " ".join(str(data.get("product_name") or "").split())
+    if product_name and not product_name_in_hits(product_name, [hit]):
+        product_name = ""
+    if not product_name:
+        status = PositionMatchStatus.none
+        fits = False
+    elif status == PositionMatchStatus.none:
+        product_name = ""
+        fits = False
+
+    try:
+        confidence = float(data.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    explanation = str(data.get("explanation") or "").strip()
+    return _CandidateEval(
+        hit=hit,
+        fits=fits,
+        status=status,
+        product_name=product_name,
+        explanation=explanation,
+        confidence=min(max(confidence, 0.0), 1.0),
+    )
+
+
+def build_match_candidate_prompt(
+    *,
+    scope_item: dict[str, Any],
+    requirements: list[ExtractedRequirement],
+    hit: Evidence,
+    instruction: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Собирает промпт и payload для оценки одного кандидата (как в match)."""
+    scope_name = str(scope_item.get("name") or "").strip()
+    qty = scope_item.get("qty")
+    unit = str(scope_item.get("unit") or "").strip()
+    quote = _product_quote_for_llm(hit)
+    model_line = ""
+    for line in quote.splitlines():
+        if line.lower().startswith("модель:"):
+            model_line = line.split(":", 1)[-1].strip()
+            break
+
+    payload = {
+        "position": {"name": scope_name, "qty": qty, "unit": unit},
+        "requirements": [
+            {
+                "text": req.text,
+                "quote": (req.quote or "")[:240] if req.quote else req.quote,
+                "kind": req.kind,
+                "priority": req.priority,
+            }
+            for req in requirements
+        ],
+        "catalog_product": {
+            "file": hit.file,
+            "location": hit.location,
+            "model": model_line,
+            "quote": quote,
+        },
+    }
+    instruction_text = (instruction or "").strip()
+    extra_instruction = ""
+    if instruction_text and instruction_text != DEFAULT_USER_INSTRUCTION.strip():
+        extra_instruction = f"Дополнительно: {instruction_text}\n\n"
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    prompt = (
+        "Ты аналитик закупок. Оцени, насколько ОДИН продукт из каталога "
+        "подходит к позиции перечня.\n\n"
+        f"{extra_instruction}"
+        f"{POSITION_MATCH_PROMPT_HINT}\n\n"
+        "Формат ответа: один JSON-объект, начинается с {{ и заканчивается }}. "
+        "Без markdown, без блоков ```, без текста до или после JSON.\n\n"
+        f"ЗАДАНИЕ:\n{payload_json}\n\n"
+        "JSON:"
+    )
+    return prompt, payload
+
+
+def _evaluate_product_candidate(
+    llm: LLM,
+    *,
+    scope_item: dict[str, Any],
+    requirements: list[ExtractedRequirement],
+    hit: Evidence,
+    instruction: str,
+    candidate_index: int,
+) -> tuple[_CandidateEval | None, int]:
+    scope_name = str(scope_item.get("name") or "").strip()
+    prompt, _payload = build_match_candidate_prompt(
+        scope_item=scope_item,
+        requirements=requirements,
+        hit=hit,
+        instruction=instruction,
+    )
+    try:
+        data, n_calls = complete_llm_json(
+            llm,
+            prompt,
+            structure_hint=POSITION_MATCH_PROMPT_HINT,
+            trace_name=f"match_candidate_{candidate_index}",
+            repair_context=prompt,
+        )
+    except Exception as exc:
+        trace_note(
+            "match_candidate_error",
+            f"Ошибка LLM при оценке кандидата: {exc}",
+            meta={"scope_name": scope_name, "file": hit.file, "index": candidate_index},
+        )
+        return None, 0
+    parsed = _parse_candidate_evaluation(data, hit)
+    if parsed is None:
+        return None, n_calls
+    parsed.llm_calls = n_calls
+    return parsed, n_calls
+
+
+def _pick_best_candidate(candidates: list[_CandidateEval]) -> _CandidateEval | None:
+    if not candidates:
+        return None
+    viable = [c for c in candidates if c.product_name and c.status != PositionMatchStatus.none]
+    if not viable:
+        return None
+    return max(
+        viable,
+        key=lambda c: (
+            _status_rank(c.status),
+            c.confidence,
+            c.hit.score or 0.0,
+        ),
+    )
+
+
 def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: list[ExtractedRequirement], asset_hits: list[Evidence], user_instruction: str | None = None,) -> ScopePositionMatch:
     """Подбор варианта из эталона для одной позиции перечня."""
     scope_name = str(scope_item.get("name") or "").strip()
@@ -145,90 +368,57 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
         return base
 
     instruction = (user_instruction or DEFAULT_USER_INSTRUCTION).strip()
-    payload = {
-        "position": {
-            "name": scope_name,
-            "qty": qty,
-            "unit": unit,
-        },
-        "requirements": [
-            {
-                "text": req.text,
-                "quote": req.quote,
-                "kind": req.kind,
-                "priority": req.priority,
-            }
-            for req in requirements
-        ],
-        "asset_hits": [hit.model_dump() for hit in asset_hits],
-    }
-    prompt = (
-        "Ты аналитик закупок. По описаниям продуктов из VL-каталога (asset_hits) "
-        "выбери конкретный вариант для позиции перечня с учётом её требований.\n"
-        f"ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:\n{instruction}\n\n"
-        f"{POSITION_MATCH_SCHEMA_HINT}\n\n"
-        f"ДАННЫЕ:\n{json.dumps(payload, ensure_ascii=False)}"
-    )
-    try:
-        data, _n_calls = complete_llm_json(
+    required_product = _infer_required_product(scope_name, requirements)
+    candidates: list[_CandidateEval] = []
+    total_calls = 0
+    for index, hit in enumerate(asset_hits[:MATCH_LLM_EVAL_MAX]):
+        evaluated, n_calls = _evaluate_product_candidate(
             llm,
-            prompt,
-            structure_hint=POSITION_MATCH_SCHEMA_HINT,
-            trace_name="match_position",
+            scope_item=scope_item,
+            requirements=requirements,
+            hit=hit,
+            instruction=instruction,
+            candidate_index=index,
         )
-    except Exception as exc:
-        trace_note(
-            "match_llm_error",
-            f"Ошибка LLM при подборе эталона: {exc}",
-            meta={"scope_name": scope_name},
-        )
-        base.status = PositionMatchStatus.none
-        base.explanation = f"Не удалось подобрать эталон (ошибка модели): {exc}"
-        return base
+        total_calls += n_calls
+        if evaluated is not None:
+            candidates.append(evaluated)
 
-    if data is None:
+    best = _pick_best_candidate(candidates)
+    if best is None:
         base.status = PositionMatchStatus.none
-        base.explanation = "Не удалось разобрать ответ модели при подборе эталона."
+        base.required_product = required_product
+        if candidates:
+            base.explanation = "Подходящего варианта в эталоне нет."
+        else:
+            base.explanation = "Не удалось разобрать ответ модели при подборе эталона."
         trace_note(
-            "match_json_failed",
+            "match_json_failed" if not candidates else "match_no_viable",
             base.explanation,
-            meta={"scope_name": scope_name},
+            meta={"scope_name": scope_name, "llm_calls": total_calls},
         )
         return base
 
-    status_raw = str(data.get("status") or "").strip().lower()
-    matched = bool(data.get("matched", False))
-    try:
-        status = PositionMatchStatus(status_raw)
-    except ValueError:
-        status = PositionMatchStatus.matched if matched else PositionMatchStatus.none
-    if not matched and status == PositionMatchStatus.matched:
-        status = PositionMatchStatus.none
-    if matched and status == PositionMatchStatus.none:
-        status = PositionMatchStatus.partial
-
-    required_product = " ".join(str(data.get("required_product") or "").split())
-    product_name = " ".join(str(data.get("product_name") or "").split())
-    if product_name and not product_name_in_hits(product_name, asset_hits):
-        product_name = ""
-    # Без конкретного изделия из эталона matched/partial недопустимы.
-    if not product_name:
-        status = PositionMatchStatus.none
-    elif status == PositionMatchStatus.none:
-        product_name = ""
-
-    try:
-        confidence = float(data.get("confidence", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        confidence = 0.0
-
-    base.status = status
+    base.status = best.status
     base.required_product = required_product
-    base.product_name = product_name
-    base.explanation = str(data.get("explanation") or "").strip()
-    if not base.explanation and status == PositionMatchStatus.none:
+    base.product_name = best.product_name
+    base.explanation = best.explanation
+    if not base.explanation and best.status == PositionMatchStatus.none:
         base.explanation = "Подходящего варианта в эталоне нет."
-    base.confidence = min(max(confidence, 0.0), 1.0)
+    base.confidence = best.confidence
+    trace_note(
+        "match_position_best",
+        base.explanation or best.status.value,
+        meta={
+            "scope_name": scope_name,
+            "product_name": best.product_name,
+            "status": best.status.value,
+            "confidence": best.confidence,
+            "candidates_evaluated": len(candidates),
+            "llm_calls": total_calls,
+            "retrieval_score": best.hit.score,
+        },
+    )
     return base
 
 
