@@ -1,7 +1,6 @@
 from enum import StrEnum
 from pathlib import Path
 import operator
-import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
@@ -12,16 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
-
-
-def _openai_compatible_base_url(url: str) -> str:
-    """Нормализует base URL для OpenAI SDK (…/v1)."""
-    cleaned = (url or "").strip().rstrip("/")
-    if not cleaned:
-        return cleaned
-    if cleaned.endswith("/v1"):
-        return cleaned
-    return f"{cleaned}/v1"
 
 
 class Evidence(BaseModel):
@@ -70,7 +59,7 @@ class DocumentKind(StrEnum):
     catalog = "catalog"
     product = "product"
     other = "other"
-    asset = "asset"  # постраничная VL-индексация без классификации
+    asset = "asset"  # Qwen whole-file индексация эталона
 
 
 DOCUMENT_KIND_LABELS: dict[DocumentKind, str] = {
@@ -103,22 +92,12 @@ class IndexingResult:
 
 @dataclass
 class IndexingContext:
-    """Контекст для индексатора (VL, embeddings и т.п.)."""
+    """Контекст индексации эталона (Qwen extract + embeddings)."""
 
     assets_path: Path
     cache_dir: Path | None = None
-    llm: Any = None
     embedding_model: str = "BAAI/bge-m3"
     embedding_device: str | None = None
-    ocr_enabled: bool = True
-    ocr_languages: str = "rus+eng"
-    vl_base_url: str = "http://127.0.0.1:8000/v1"
-    vl_model: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
-    vl_api_key: str = "EMPTY"
-    vl_max_pages: int = 40
-    vl_image_scale: float = 1.5
-    vl_timeout_sec: float = 120.0
-    vl_max_output_tokens: int = 2000
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -150,14 +129,13 @@ class ProductDocumentIndex(BaseModel):
     doc_kind: DocumentKind
     catalog_name: str = ""
     products: list[Product] = Field(default_factory=list)
-    # Страницы, на которых VL нашёл описание продукции (после скана).
     product_pages: list[int] = Field(default_factory=list)
     embedding_model: str = ""
     warnings: list[str] = Field(default_factory=list)
 
 
 DEFAULT_USER_INSTRUCTION = (
-    "Эталон — VL-каталог: структурированные описания нашей продукции (модель, характеристики). "
+    "Эталон — каталог продукции, извлечённый Qwen whole-file (модель, характеристики). "
     "Тендер задаёт требования к закупке (часто чужой тип «или аналог»). "
     "Для каждой позиции выбери конкретную модель/артикул из asset_hits (топ кандидатов каталога), "
     "в том числе как аналог, если характеристики подходят. "
@@ -214,30 +192,13 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_base_url: str = "https://api.openai.com/v1"
 
-    # Vision-LLM для постраничной индексации эталонов (OpenAI-compatible, напр. vLLM).
-    # Можно задать AI_TENDER_VL_* или LOCAL_LLM_* (см. get_settings).
-    vl_base_url: str = "http://127.0.0.1:8000/v1"
-    vl_model: str = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
-    vl_api_key: str = "EMPTY"
-    vl_max_pages: int = 40
-    vl_image_scale: float = 1.5
-    vl_timeout_sec: float = 120.0
-    vl_max_output_tokens: int = 2000
-
     # Retrieval / оценка
     top_k: int = 3
-    chunk_size: int = 1024
-    chunk_overlap: int = 128
     max_reqs_per_scope_item: int = 10
 
-    # LangGraph: выбор файлов и extract
-    max_extract_chars_per_doc: int = 120_000
+    # LangGraph: выбор файлов
     max_tender_files_initial: int = 3
     max_tender_files_total: int = 6
-    # Сколько файлов-кандидатов пробовать на позицию (после дедупа docx/pdf).
-    max_requirement_files: int = 3
-    # Параллельные LLM-запросы требований по позициям внутри одного файла.
-    requirements_parallelism: int = 6
     # Параллельный подбор эталона по позициям (retrieval + match LLM).
     match_parallelism: int = 4
 
@@ -253,49 +214,16 @@ class Settings(BaseSettings):
     cache_dir: Path = Path("data/cache")
 
     # Whole-file извлечение Qwen DashScope (отдельно от match LLM).
-    extract_backend: str = "legacy"  # qwen | legacy
+    extract_backend: str = "qwen"
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     qwen_doc_model: str = "qwen-doc-turbo"
     qwen_long_model: str = "qwen-long"
-    qwen_vl_model: str = "qwen3-vl-plus"
     qwen_extract_schema_version: str = "1"
     qwen_max_file_mb: int = 150
 
 
 def get_settings() -> Settings:
-    """Загружает Settings; LOCAL_LLM_* подставляются в VL, если AI_TENDER_VL_* не заданы."""
-    settings = Settings()
-    updates: dict[str, Any] = {}
-
-    if "AI_TENDER_VL_BASE_URL" not in os.environ:
-        local_url = os.getenv("LOCAL_LLM_BASE_URL")
-        if local_url:
-            updates["vl_base_url"] = _openai_compatible_base_url(local_url)
-    else:
-        updates["vl_base_url"] = _openai_compatible_base_url(settings.vl_base_url)
-
-    if "AI_TENDER_VL_MODEL" not in os.environ:
-        local_model = os.getenv("LOCAL_LLM_DEFAULT_MODEL")
-        if local_model:
-            updates["vl_model"] = local_model.strip()
-
-    if "AI_TENDER_VL_TIMEOUT_SEC" not in os.environ:
-        local_timeout = os.getenv("LOCAL_LLM_TIMEOUT_SEC")
-        if local_timeout:
-            try:
-                updates["vl_timeout_sec"] = float(local_timeout)
-            except ValueError:
-                pass
-
-    if "AI_TENDER_VL_MAX_OUTPUT_TOKENS" not in os.environ:
-        local_max = os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS")
-        if local_max:
-            try:
-                updates["vl_max_output_tokens"] = int(local_max)
-            except ValueError:
-                pass
-
-    return settings.model_copy(update=updates) if updates else settings
+    return Settings()
 
 
 ProgressCallback = Callable[[str, float], None]
@@ -328,9 +256,6 @@ class PipelineState(TypedDict, total=False):
 
     requirements_by_item: list[list[ExtractedRequirement]]
     requirements_stats: dict[str, Any]
-    requirement_queue: list[str]
-    requirement_files_tried: list[str]
-    current_requirement_file: str
 
     assets_index: Any
     product_catalog: Any

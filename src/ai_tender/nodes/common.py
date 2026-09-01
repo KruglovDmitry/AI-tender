@@ -185,11 +185,6 @@ def dedupe_evidence_by_file(
     )
 
 
-def _hit_file_path(hit) -> str:
-    node = getattr(hit, "node", None)
-    meta = (getattr(node, "metadata", None) or {}) if node is not None else {}
-    return str(meta.get("file_path") or meta.get("file_name") or "")
-
 
 def cap_items_per_file(
     items: list,
@@ -228,22 +223,3 @@ def cap_evidence_per_file(
         limit=limit,
     )
 
-
-def cap_hits_per_file(hits: list, *, per_file: int = 4, limit: int | None = None) -> list:
-    return cap_items_per_file(
-        hits,
-        file_of=_hit_file_path,
-        score_of=lambda hit: getattr(hit, "score", None),
-        per_file=per_file,
-        limit=limit,
-    )
-
-
-def dedupe_hits_by_file(hits: list, *, limit: int | None = None) -> list:
-    """Один лучший retrieval-hit на файл (по score)."""
-    return _dedupe_by_file(
-        hits,
-        file_of=_hit_file_path,
-        score_of=lambda hit: getattr(hit, "score", None),
-        limit=limit,
-    )

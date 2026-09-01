@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ...models import ProductDocumentIndex
+from ..models import ProductDocumentIndex
 
 JSON_DIR_NAME = "product_json"
 EMBED_DIR_NAME = "product_embeddings"
@@ -29,7 +29,6 @@ def product_embeddings_root(cache_dir: Path) -> Path:
 
 
 def _mirror_stem(relative_path: str) -> Path:
-    """assets/foo/bar.pdf → foo/bar (без суффикса исходника)."""
     rel = relative_path.replace("\\", "/").lstrip("/")
     return Path(rel).with_suffix("")
 
@@ -39,7 +38,6 @@ def json_path_for(cache_dir: Path, relative_path: str) -> Path:
 
 
 def embeddings_paths(cache_dir: Path, relative_path: str) -> tuple[Path, Path]:
-    """→ (vectors.npy, ids.json)."""
     stem = product_embeddings_root(cache_dir) / _mirror_stem(relative_path)
     return stem.with_suffix(".npy"), stem.with_suffix(".ids.json")
 
@@ -107,7 +105,6 @@ def load_product_embeddings(
 
 
 def delete_product_artifacts(cache_dir: Path, relative_path: str) -> list[str]:
-    """Удаляет JSON и эмбеддинги для исходного файла. → список удалённых путей."""
     removed: list[str] = []
     for path in (
         json_path_for(cache_dir, relative_path),

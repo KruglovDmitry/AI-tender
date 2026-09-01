@@ -3,7 +3,6 @@ from pathlib import Path
 from ai_tender.graph import (
     build_graph,
     export_graph_diagram,
-    route_after_requirements,
     route_after_scope,
     warm_up_graph,
 )
@@ -27,8 +26,9 @@ def test_export_graph_diagram(tmp_path: Path) -> None:
     text = written["mermaid"].read_text(encoding="utf-8")
     assert "select_files" in text
     assert "extract_scope" in text
-    assert "load_next_requirement_file" in text
+    assert "build_assets_index" in text
     assert "match_positions" in text
+    assert "load_next_requirement_file" not in text
     if "png" in written:
         assert written["png"].is_file()
         assert written["png"].stat().st_size > 0
@@ -56,7 +56,7 @@ def test_route_after_scope_asks_more_for_title_only() -> None:
     assert route_after_scope(state) == "load_next_scope_file"
 
 
-def test_route_after_scope_goes_to_requirements_loop() -> None:
+def test_route_after_scope_goes_to_catalog_when_ready() -> None:
     state = {
         "scope_items": [
             {"name": "замена ПКУ 6-10 кВ", "qty": 24, "unit": "шт."},
@@ -67,40 +67,7 @@ def test_route_after_scope_goes_to_requirements_loop() -> None:
         "ranked_paths": ["a.pdf", "b.pdf"],
         "scope_queue": ["a.pdf"],
     }
-    assert route_after_scope(state) == "load_next_requirement_file"
-
-
-def test_route_after_requirements_loads_next_when_empty() -> None:
-    class _S:
-        max_requirement_files = 3
-
-    state = {
-        "settings": _S(),
-        "scope_items": [{"name": "a"}, {"name": "b"}],
-        "requirements_by_item": [[], []],
-        "requirement_queue": ["tz.docx", "title.pdf"],
-        "requirement_files_tried": ["tz.docx"],
-    }
-    assert route_after_requirements(state) == "load_next_requirement_file"
-
-
-def test_route_after_requirements_finishes_when_filled() -> None:
-    class _S:
-        max_requirement_files = 3
-
-    from ai_tender.models import ExtractedRequirement
-
-    req = ExtractedRequirement(
-        text="x", quote="x", file="tz.docx", location="док"
-    )
-    state = {
-        "settings": _S(),
-        "scope_items": [{"name": "a"}, {"name": "b"}],
-        "requirements_by_item": [[req], [req]],
-        "requirement_queue": ["tz.docx", "title.pdf"],
-        "requirement_files_tried": ["tz.docx"],
-    }
-    assert route_after_requirements(state) == "build_assets_index"
+    assert route_after_scope(state) == "build_assets_index"
 
 
 def test_scope_has_detailed_list() -> None:

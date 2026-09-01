@@ -1,64 +1,16 @@
-"""LLM-извлечение предмета закупки (scope) из документов тендера."""
+"""Извлечение предмета закупки (scope + requirements) через Qwen whole-file."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
-from llama_index.core import Document
-from llama_index.core.llms import LLM
-
-from ..services.text_service import merge_documents_by_file, numbered_excerpt
+from ..extract.qwen_settings import uses_qwen_extract
 from ..models import PipelineState, Settings
-from ..providers import complete_llm_json
-from ..services.logging_service import trace_note
-from .common import parse_optional_float
+from .scope_qwen import extract_scope_qwen_from_file
 
-
-SCOPE_SCHEMA_HINT = """
-Верни ТОЛЬКО JSON-объект:
-{
-  "scope_summary": "общий титул/название закупки (1-2 предложения, без списка позиций)",
-  "scope_items": [
-    {
-      "name": "формулировка одной позиции перечня работ/оборудования (без количества)",
-      "qty": 24,
-      "unit": "шт.",
-      "confidence": 0.0..1.0,
-      "quote": "дословная цитата строки из документа"
-    }
-  ],
-  "overall_confidence": 0.0..1.0,
-  "needs_more_docs": true|false,
-  "missing_signals": "если needs_more_docs=true — чего не хватает"
-}
-
-Правила:
-- Используй ТОЛЬКО текст тендера ниже.
-- scope_summary = официальное общее название закупки (титул), НЕ подменяй им перечень.
-- scope_items = детальный ПЕРЕЧЕНЬ позиций (работы/оборудование), обычно в блоках
-  «перечень», «максимальное количество», маркированных списках вида «– … – N шт.».
-- Каждая строка перечня = отдельный scope_item. Не схлопывай список в один item.
-- qty/unit: извлекай число и единицу (шт., компл. и т.п.), если есть; иначе qty=null, unit="".
-- Если есть только общий титул без количественного перечня позиций:
-  scope_items=[] (или один item без qty) и needs_more_docs=true.
-- Если перечень найден (даже 1 позиция с qty) — needs_more_docs=false.
-- quote — дословный фрагмент. Не пересказывай.
-""".strip()
-
-
-def _parse_optional_qty(value: Any) -> float | int | None:
-    if value is None or value == "":
-        return None
-    try:
-        num = float(value)
-    except (TypeError, ValueError):
-        return None
-    if num != num:  # NaN
-        return None
-    if abs(num - int(num)) < 1e-9:
-        return int(num)
-    return num
+logger = logging.getLogger(__name__)
 
 
 def scope_has_detailed_list(scope_items: list[dict[str, Any]]) -> bool:
@@ -68,101 +20,6 @@ def scope_has_detailed_list(scope_items: list[dict[str, Any]]) -> bool:
     if len(scope_items) == 1 and scope_items[0].get("qty") is not None:
         return True
     return False
-
-
-def extract_procurement_scope_from_documents(
-    documents: list[Document],
-    llm: LLM,
-    *,
-    max_chars_per_doc: int,
-    scope_max_items: int = 40,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    files = merge_documents_by_file(documents)
-    if not files:
-        return [], {
-            "scope_summary": "",
-            "overall_confidence": 0.0,
-            "needs_more_docs": True,
-            "missing_signals": "нет документов для извлечения scope",
-        }
-
-    scope_docs: list[str] = []
-    for label, text, _page in files:
-        numbered = numbered_excerpt(text, max_chars=max_chars_per_doc)
-        scope_docs.append(f"ФАЙЛ: {label}\n{numbered}")
-
-    joined_docs = "\n\n".join(scope_docs)
-    prompt = (
-        "Ты аналитик закупок. Нужны ДВА слоя:\n"
-        "1) scope_summary — общий титул закупки;\n"
-        "2) scope_items — детальный перечень позиций работ/оборудования "
-        "(как в ТЗ: «замена ПКУ … – 24 шт.»), а НЕ одно общее название.\n"
-        "Ищи блоки «максимальное количество», «перечень», списки с «шт.».\n\n"
-        f"{SCOPE_SCHEMA_HINT}\n\n"
-        f"ДОКУМЕНТЫ ТЕНДЕРА:\n{joined_docs}"
-    )
-    data, _n_calls = complete_llm_json(
-        llm,
-        prompt,
-        structure_hint="той же структуры (scope_summary, scope_items, overall_confidence, …)",
-        trace_name="extract_scope",
-    )
-    if data is None:
-        trace_note(
-            "extract_scope",
-            "Не удалось разобрать JSON ответа LLM для scope",
-            meta={"parse_failed": True},
-        )
-        return [], {
-            "scope_summary": "",
-            "overall_confidence": 0.0,
-            "needs_more_docs": True,
-            "missing_signals": "LLM вернул невалидный JSON при извлечении предмета закупки",
-        }
-
-    scope_items: list[dict[str, Any]] = []
-    for item in data.get("scope_items", [])[:scope_max_items]:
-        name = str(item.get("name", "")).strip()
-        if not name:
-            continue
-        qty = _parse_optional_qty(item.get("qty"))
-        unit = str(item.get("unit", "") or "").strip()
-        if qty is not None and not unit:
-            unit = "шт."
-        scope_items.append(
-            {
-                "name": name,
-                "qty": qty,
-                "unit": unit,
-                "confidence": min(
-                    max(parse_optional_float(item.get("confidence"), 0.5), 0.0),
-                    1.0,
-                ),
-                "quote": str(item.get("quote", "")).strip(),
-            }
-        )
-
-    overall = min(max(parse_optional_float(data.get("overall_confidence"), 0.5), 0.0), 1.0)
-    needs_more = bool(data.get("needs_more_docs", False))
-    missing_signals = str(data.get("missing_signals", "")).strip()
-
-    if not scope_has_detailed_list(scope_items):
-        needs_more = True
-        if not missing_signals:
-            missing_signals = (
-                "нет детального перечня позиций с количествами "
-                "(есть только общий титул или пустой список)"
-            )
-
-    meta = {
-        "scope_summary": str(data.get("scope_summary", "")).strip(),
-        "overall_confidence": overall,
-        "needs_more_docs": needs_more,
-        "missing_signals": missing_signals,
-    }
-    return scope_items, meta
-
-
 
 
 def node_load_next_scope_file(state: PipelineState) -> dict[str, Any]:
@@ -179,8 +36,6 @@ def node_load_next_scope_file(state: PipelineState) -> dict[str, Any]:
 
 def node_extract_scope(state: PipelineState) -> dict[str, Any]:
     from .common import progress
-    from ..extract.qwen_settings import uses_qwen_extract
-    from .scope_qwen import extract_scope_qwen_with_legacy_fallback
 
     settings: Settings = state["settings"]
     progress(state, "LangGraph: предмет закупки (перечень позиций)", 0.32)
@@ -188,57 +43,57 @@ def node_extract_scope(state: PipelineState) -> dict[str, Any]:
     existing_items = list(state.get("scope_items") or [])
     existing_meta = dict(state.get("scope_meta") or {})
     existing_reqs = list(state.get("requirements_by_item") or [])
-    docs = list(state.get("documents") or [])
     files_used = list(state.get("scope_files_used") or [])
     current_label = files_used[-1] if files_used else ""
 
-    updates: dict[str, Any] = {}
+    if not current_label:
+        return {}
 
-    if uses_qwen_extract(settings) and current_label:
-        path = Path(state["tender_path"]) / current_label
-        progress(state, f"Qwen whole-file: {path.name}", 0.34)
-        scope_items, scope_meta, reqs, warnings, qwen_ok = (
-            extract_scope_qwen_with_legacy_fallback(
-                path=path,
-                relative_label=current_label,
-                documents=docs,
-                llm=state["llm"],
-                settings=settings,
-                existing_items=existing_items,
-                existing_meta=existing_meta,
-                existing_reqs=existing_reqs,
-            )
+    if not uses_qwen_extract(settings):
+        return {
+            "warnings": [
+                "Qwen extract не настроен: задайте AI_TENDER_EXTRACT_BACKEND=qwen "
+                "и QWEN_API_KEY или DASHSCOPE_API_KEY"
+            ],
+        }
+
+    path = Path(state["tender_path"]) / current_label
+    progress(state, f"Qwen whole-file: {path.name}", 0.34)
+
+    try:
+        scope_items, scope_meta, reqs, warnings = extract_scope_qwen_from_file(
+            path,
+            relative_label=current_label,
+            settings=settings,
+            existing_items=existing_items,
+            existing_meta=existing_meta,
+            existing_reqs=existing_reqs,
         )
-        updates["scope_items"] = scope_items
-        updates["scope_meta"] = scope_meta
-        if warnings:
-            updates["warnings"] = warnings
-        if qwen_ok and reqs is not None:
-            updates["requirements_by_item"] = reqs
-            updates["qwen_extracted_files"] = [current_label.replace("\\", "/")]
-            prev_stats = dict(state.get("requirements_stats") or {})
-            updates["requirements_stats"] = {
-                **prev_stats,
-                "mode": "qwen_whole_file",
-                "selected": sum(len(b) for b in reqs),
-                "files_used": list(
-                    dict.fromkeys(list(prev_stats.get("files_used") or []) + [current_label])
-                ),
-            }
-        return updates
+    except Exception as exc:
+        logger.exception("Qwen scope extract failed for %s", current_label)
+        return {"warnings": [f"Qwen ошибка {path.name}: {exc}"]}
 
-    scope_items, scope_meta = extract_procurement_scope_from_documents(
-        docs,
-        state["llm"],
-        max_chars_per_doc=settings.max_extract_chars_per_doc,
-    )
-    scope_meta["extraction_mode"] = "text_llm"
-    return {"scope_items": scope_items, "scope_meta": scope_meta}
+    prev_stats = dict(state.get("requirements_stats") or {})
+    return {
+        "scope_items": scope_items,
+        "scope_meta": scope_meta,
+        "requirements_by_item": reqs,
+        "qwen_extracted_files": [current_label.replace("\\", "/")],
+        "requirements_stats": {
+            **prev_stats,
+            "mode": "qwen_whole_file",
+            "selected": sum(len(b) for b in reqs),
+            "files_used": list(
+                dict.fromkeys(list(prev_stats.get("files_used") or []) + [current_label])
+            ),
+        },
+        "warnings": warnings,
+    }
 
 
 def route_after_scope(
     state: PipelineState,
-) -> Literal["load_next_scope_file", "load_next_requirement_file"]:
+) -> Literal["load_next_scope_file", "build_assets_index"]:
     from .common import next_unloaded
 
     scope_items = state.get("scope_items") or []
@@ -248,4 +103,4 @@ def route_after_scope(
     )
     if needs_more and next_unloaded(state) is not None:
         return "load_next_scope_file"
-    return "load_next_requirement_file"
+    return "build_assets_index"

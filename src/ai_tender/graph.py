@@ -13,11 +13,6 @@ from .models import AnalysisReport, PipelineState, ProgressCallback, Settings, g
 from .nodes.build_index import node_build_assets_index
 from .nodes.finalize import node_finalize
 from .nodes.match import node_match_positions
-from .nodes.requirements import (
-    node_extract_requirements,
-    node_load_next_requirement_file,
-    route_after_requirements,
-)
 from .nodes.scope import (
     node_extract_scope,
     node_load_next_scope_file,
@@ -48,12 +43,10 @@ def export_graph_diagram(
         png_path.write_bytes(drawable.draw_mermaid_png())
         written["png"] = png_path
     except Exception:
-        # PNG тянет mermaid.ink / локальный рендер — без сети не обязателен.
         pass
     return written
 
 
-# Реэкспорт для тестов / внешних импортов
 __all__ = [
     "PipelineState",
     "ProgressCallback",
@@ -61,7 +54,6 @@ __all__ = [
     "build_graph",
     "export_graph_diagram",
     "get_compiled_graph",
-    "route_after_requirements",
     "route_after_scope",
     "warm_up_graph",
 ]
@@ -72,8 +64,6 @@ def build_graph():
     graph.add_node("select_files", node_select_files)
     graph.add_node("load_next_scope_file", node_load_next_scope_file)
     graph.add_node("extract_scope", node_extract_scope)
-    graph.add_node("load_next_requirement_file", node_load_next_requirement_file)
-    graph.add_node("extract_requirements", node_extract_requirements)
     graph.add_node("build_assets_index", node_build_assets_index)
     graph.add_node("match_positions", node_match_positions)
     graph.add_node("build_verdict", node_build_verdict)
@@ -87,15 +77,6 @@ def build_graph():
         route_after_scope,
         {
             "load_next_scope_file": "load_next_scope_file",
-            "load_next_requirement_file": "load_next_requirement_file",
-        },
-    )
-    graph.add_edge("load_next_requirement_file", "extract_requirements")
-    graph.add_conditional_edges(
-        "extract_requirements",
-        route_after_requirements,
-        {
-            "load_next_requirement_file": "load_next_requirement_file",
             "build_assets_index": "build_assets_index",
         },
     )
@@ -145,7 +126,6 @@ def analyze(
                 "assets_path": str(assets_path),
                 "llm_model": settings.llm_model,
                 "max_reqs_per_scope_item": settings.max_reqs_per_scope_item,
-                "max_requirement_files": settings.max_requirement_files,
                 "match_parallelism": settings.match_parallelism,
                 "top_k": settings.top_k,
             },
@@ -173,9 +153,7 @@ def analyze(
                     "warnings": [],
                     "requirements_by_item": [],
                     "requirements_stats": {},
-                    "requirement_queue": [],
-                    "requirement_files_tried": [],
-                    "current_requirement_file": "",
+                    "qwen_extracted_files": [],
                     "position_matches": [],
                     "verdict": "",
                     "query_selection": {},

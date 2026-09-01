@@ -1,4 +1,4 @@
-"""Блокировки на время VL-индексации (PDF открыт в процессе)."""
+"""Блокировки на время индексации эталона."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ _active: set[str] = set()
 
 
 class AssetFileLockedError(PermissionError):
-    """PDF занят — обычно идёт индексация или другой процесс держит файл."""
+    """Файл занят — обычно идёт индексация."""
 
 
 def _normalize_rel(relative_path: str) -> str:

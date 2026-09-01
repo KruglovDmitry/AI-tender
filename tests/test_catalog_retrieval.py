@@ -2,7 +2,7 @@ import numpy as np
 
 from ai_tender.models import Product, ProductSource
 from ai_tender.services.catalog_retrieval import (
-    VlCatalog,
+    ProductCatalog,
     catalog_hit_to_evidence,
     embedding_text,
     search_catalog,
@@ -24,7 +24,7 @@ def test_search_catalog_returns_top_by_cosine(monkeypatch) -> None:
     p2 = Product(id="2", model="SR33020", canonical_desc="ИБП 20 кВА")
     p3 = Product(id="3", model="MAC9", canonical_desc="модуль ввода-вывода")
     basis = np.eye(3, dtype=np.float32)
-    catalog = VlCatalog(
+    catalog = ProductCatalog(
         products=[p1, p2, p3],
         vectors=basis,
         product_ids=["1", "2", "3"],

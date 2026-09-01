@@ -259,13 +259,13 @@ def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.partial)
 
     monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
-    from ai_tender.services.catalog_retrieval import VlCatalog
+    from ai_tender.services.catalog_retrieval import ProductCatalog
 
     settings = Settings(match_parallelism=4)
     state = {
         "settings": settings,
         "llm": MagicMock(),
-        "product_catalog": VlCatalog(products=[Product(id="1")]),
+        "product_catalog": ProductCatalog(products=[Product(id="1")]),
         "scope_items": [{"name": f"поз-{i}"} for i in range(6)],
         "requirements_by_item": [[] for _ in range(6)],
         "progress": None,
@@ -297,13 +297,13 @@ def test_node_match_positions_isolates_errors(monkeypatch) -> None:
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.matched)
 
     monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
-    from ai_tender.services.catalog_retrieval import VlCatalog
+    from ai_tender.services.catalog_retrieval import ProductCatalog
 
     settings = Settings(match_parallelism=2)
     state = {
         "settings": settings,
         "llm": MagicMock(),
-        "product_catalog": VlCatalog(products=[Product(id="1")]),
+        "product_catalog": ProductCatalog(products=[Product(id="1")]),
         "scope_items": [{"name": "ok"}, {"name": "bad"}, {"name": "ok2"}],
         "requirements_by_item": [[], [], []],
         "progress": None,

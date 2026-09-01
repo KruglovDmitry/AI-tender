@@ -54,10 +54,6 @@ class GateDecision:
     def sends_to_qwen_doc(self) -> bool:
         return self.ok and self.route in {ExtractRoute.qwen_doc, ExtractRoute.qwen_long}
 
-    @property
-    def uses_scan_contract(self) -> bool:
-        return self.ok and self.route == ExtractRoute.qwen_scan
-
 
 def _pdf_text_layer_stats(path: Path) -> tuple[int, int]:
     import fitz

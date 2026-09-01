@@ -1,4 +1,4 @@
-"""Поиск по VL-каталогу (product_json + product_embeddings) для анализа тендера."""
+"""Поиск по Qwen-каталогу (product_json + product_embeddings) для match."""
 
 from __future__ import annotations
 
@@ -8,11 +8,8 @@ import numpy as np
 from pathlib import Path
 
 from ..models import Evidence, Product, ProductDocumentIndex
+from .catalog_persistence import load_product_embeddings, product_json_root
 from .index_service import configure_embeddings
-from .indexing.persistance import (
-    load_product_embeddings,
-    product_json_root,
-)
 
 
 @dataclass
@@ -24,7 +21,7 @@ class CatalogProductHit:
 
 
 @dataclass
-class VlCatalog:
+class ProductCatalog:
     products: list[Product] = field(default_factory=list)
     vectors: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.float32))
     product_ids: list[str] = field(default_factory=list)
@@ -39,7 +36,6 @@ class VlCatalog:
 
 
 def embedding_text(product: Product) -> str:
-    """Текст для эмбеддинга — как при persist() в VL-индексации."""
     return (product.canonical_desc or product.model or product.raw_chunk or product.id).strip() or product.id
 
 
@@ -75,7 +71,7 @@ def format_product_quote(
 
 def catalog_hit_to_evidence(hit: CatalogProductHit) -> Evidence:
     page = hit.product.source.page
-    location = f"стр. {page}" if page else "VL-каталог"
+    location = f"стр. {page}" if page else "каталог эталонов"
     file_ref = hit.product.source.catalog_id or hit.source_file
     quote = format_product_quote(
         hit.product,
@@ -101,19 +97,21 @@ def _normalize_rows(matrix: np.ndarray) -> np.ndarray:
     return matrix / norms
 
 
-def load_vl_catalog(
+def load_product_catalog(
     cache_dir: Path,
     *,
     embedding_model: str,
     device: str | None = None,
-) -> tuple[VlCatalog, list[str]]:
-    """Собирает объединённый VL-каталог из product_json/ и product_embeddings/."""
+) -> tuple[ProductCatalog, list[str]]:
+    """Собирает каталог из product_json/ и product_embeddings/ (Qwen extract)."""
     configure_embeddings(embedding_model, device)
     warnings: list[str] = []
     root = product_json_root(cache_dir)
     if not root.is_dir():
-        warnings.append("VL-каталог не найден (нет product_json/). Переиндексируйте эталоны.")
-        return VlCatalog(embedding_model=embedding_model), warnings
+        warnings.append(
+            "Каталог эталонов не найден (нет product_json/). Переиндексируйте эталоны через Qwen."
+        )
+        return ProductCatalog(embedding_model=embedding_model), warnings
 
     products: list[Product] = []
     vectors_rows: list[np.ndarray] = []
@@ -164,14 +162,14 @@ def load_vl_catalog(
 
     if not products:
         warnings.append(
-            "VL-каталог пуст: ни один эталон не содержит продуктов с эмбеддингами. "
-            "Переиндексируйте PDF в разделе «Эталоны»."
+            "Каталог пуст: ни один эталон не содержит продуктов с эмбеддингами. "
+            "Переиндексируйте файлы в разделе «Эталоны» (Qwen whole-file)."
         )
-        return VlCatalog(embedding_model=embedding_model), warnings
+        return ProductCatalog(embedding_model=embedding_model), warnings
 
     stacked = np.vstack(vectors_rows).astype(np.float32, copy=False)
     return (
-        VlCatalog(
+        ProductCatalog(
             products=products,
             vectors=_normalize_rows(stacked),
             product_ids=product_ids,
@@ -194,7 +192,7 @@ def embed_query(text: str, *, embedding_model: str, device: str | None) -> np.nd
 
 
 def search_catalog(
-    catalog: VlCatalog,
+    catalog: ProductCatalog,
     query: str,
     *,
     top_k: int,

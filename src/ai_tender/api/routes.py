@@ -13,13 +13,9 @@ from pydantic import BaseModel
 
 from ai_tender.graph import analyze
 from ai_tender.models import AnalysisReport, get_settings
-from ai_tender.services.index_service import (
-    get_assets_index_status,
-    remove_asset_from_index,
-    scan_assets_files,
-)
-from ai_tender.services.indexing import index_asset_files
-from ai_tender.services.indexing.persistance import (
+from ai_tender.services.index_service import delete_asset_file, scan_assets_files
+from ai_tender.services.catalog_index import index_asset_files
+from ai_tender.services.catalog_persistence import (
     catalog_is_indexed,
     load_product_index,
 )
@@ -125,19 +121,6 @@ def api_ocr_status() -> dict[str, Any]:
 def list_assets(assets_path: str | None = None) -> dict[str, Any]:
     settings = get_settings()
     root = resolve_assets_path(assets_path)
-    try:
-        status = get_assets_index_status(
-            root,
-            settings.cache_dir,
-            settings.embedding_model,
-            settings.chunk_size,
-            settings.chunk_overlap,
-            ocr_enabled=settings.ocr_enabled,
-            ocr_languages=settings.ocr_languages,
-        )
-    except Exception:
-        status = {"files": [], "warnings": []}
-
     disk_files = sorted(scan_assets_files(root))
     items: list[dict[str, Any]] = []
     for rel in disk_files:
@@ -156,7 +139,6 @@ def list_assets(assets_path: str | None = None) -> dict[str, Any]:
     return {
         "assets_path": str(root),
         "files": items,
-        "index_status": status,
     }
 
 
@@ -208,7 +190,7 @@ async def upload_assets(
         uploads = [_Upload(name, data) for name, data in payloads]
         progress("Сохранение на диск…", 0.15)
         _, _, changed = append_uploaded_files(uploads, root)
-        progress("VL-индексация по страницам…", 0.35)
+        progress("Индексация эталонов…", 0.35)
         results, _ = index_asset_files(
             root,
             changed,
@@ -241,17 +223,7 @@ def delete_asset(body: DeleteAssetRequest, assets_path: str | None = None) -> di
     settings = get_settings()
     root = resolve_assets_path(assets_path)
     try:
-        remove_asset_from_index(
-            root,
-            settings.cache_dir,
-            body.path,
-            settings.embedding_model,
-            settings.chunk_size,
-            settings.chunk_overlap,
-            device=settings.embedding_device,
-            ocr_enabled=settings.ocr_enabled,
-            ocr_languages=settings.ocr_languages,
-        )
+        delete_asset_file(root, settings.cache_dir, body.path)
     except PermissionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "deleted", "path": body.path}
@@ -275,7 +247,7 @@ def reindex_asset(body: ReindexAssetRequest, assets_path: str | None = None) -> 
 
     def task() -> dict[str, Any]:
         progress = job_manager.make_progress(job.id)
-        progress(f"VL-индексация «{Path(rel).name}»…", 0.2)
+        progress(f"Индексация «{Path(rel).name}»…", 0.2)
         results, _ = index_asset_files(
             root,
             [rel],

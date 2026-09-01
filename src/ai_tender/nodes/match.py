@@ -10,7 +10,7 @@ from typing import Any
 from llama_index.core.llms import LLM
 
 from ..services.catalog_retrieval import (
-    VlCatalog,
+    ProductCatalog,
     catalog_hit_to_evidence,
     search_catalog,
 )
@@ -40,7 +40,7 @@ POSITION_MATCH_SCHEMA_HINT = """
 }
 
 Правила:
-- Опирайся ТОЛЬКО на position, requirements и asset_hits (описания продуктов из VL-каталога).
+- Опирайся ТОЛЬКО на position, requirements и asset_hits (описания продуктов из каталога эталонов).
 - required_product и product_name — РАЗНЫЕ поля, не смешивай источники.
 - required_product: заполняй ТОЛЬКО если в названии позиции или в требованиях явно
   указано конкретное обозначение/тип/модель того, что нужно купить
@@ -133,7 +133,7 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
     )
     if not asset_hits:
         base.status = PositionMatchStatus.none
-        base.explanation = "Подходящего варианта в VL-каталоге нет (нет кандидатов)."
+        base.explanation = "Подходящего варианта в каталоге эталонов нет (нет кандидатов)."
         trace_note(
             "match_skip_no_hits",
             base.explanation,
@@ -163,7 +163,7 @@ def match_scope_position(llm: LLM, *, scope_item: dict[str, Any], requirements: 
         "asset_hits": [hit.model_dump() for hit in asset_hits],
     }
     prompt = (
-        "Ты аналитик закупок. По описаниям продуктов из VL-каталога (asset_hits) "
+        "Ты аналитик закупок. По описаниям продуктов из каталога эталонов (asset_hits) "
         "выбери конкретный вариант для позиции перечня с учётом её требований.\n"
         f"ЗАДАЧА ОТ ПОЛЬЗОВАТЕЛЯ:\n{instruction}\n\n"
         f"{POSITION_MATCH_SCHEMA_HINT}\n\n"
@@ -255,7 +255,7 @@ def position_to_query_text(scope_name: str, requirements: list[ExtractedRequirem
 def retrieve_hits_for_position(
     scope_name: str,
     requirements: list[ExtractedRequirement],
-    catalog: VlCatalog,
+    catalog: ProductCatalog,
     *,
     top_k: int,
     embedding_model: str,
@@ -282,7 +282,7 @@ def retrieve_hits_for_position(
             "score": hit.score,
             "file": hit.source_file,
             "model": hit.product.model,
-            "location": f"стр. {hit.product.source.page}" if hit.product.source.page else "VL-каталог",
+            "location": f"стр. {hit.product.source.page}" if hit.product.source.page else "каталог эталонов",
             "text_preview": format_product_preview(hit),
         }
         for hit in hits
@@ -297,7 +297,7 @@ def retrieve_hits_for_position(
             "top_k": top_k,
             "fetch_k": fetch_k,
             "catalog_products": catalog.size,
-            "retrieval": "vl_catalog",
+            "retrieval": "qwen_catalog",
         },
     )
     return hits[: max(top_k * 3, 12)]
@@ -335,7 +335,7 @@ def _match_one_position(
     llm: LLM,
     scope_item: dict[str, Any],
     requirements: list[ExtractedRequirement],
-    product_catalog: VlCatalog,
+    product_catalog: ProductCatalog,
     top_k: int,
     user_instruction: str | None,
     embedding_model: str,
@@ -367,13 +367,13 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
     product_catalog = state.get("product_catalog")
     if product_catalog is None or product_catalog.size == 0:
         warnings = [
-            "VL-каталог пуст — подбор по позициям невозможен. Переиндексируйте эталоны."
+            "Каталог эталонов пуст — подбор по позициям невозможен. Переиндексируйте эталоны."
         ]
         matches = [
             _failed_position_match(
                 scope_items[i],
                 reqs_by_item[i] if i < len(reqs_by_item) else [],
-                explanation="VL-каталог не содержит продуктов для подбора.",
+                explanation="Каталог эталонов не содержит продуктов для подбора.",
             )
             for i in range(len(scope_items))
         ]
