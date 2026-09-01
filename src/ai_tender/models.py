@@ -252,6 +252,15 @@ class Settings(BaseSettings):
 
     cache_dir: Path = Path("data/cache")
 
+    # Whole-file извлечение Qwen DashScope (отдельно от match LLM).
+    extract_backend: str = "legacy"  # qwen | legacy
+    qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    qwen_doc_model: str = "qwen-doc-turbo"
+    qwen_long_model: str = "qwen-long"
+    qwen_vl_model: str = "qwen3-vl-plus"
+    qwen_extract_schema_version: str = "1"
+    qwen_max_file_mb: int = 150
+
 
 def get_settings() -> Settings:
     """Загружает Settings; LOCAL_LLM_* подставляются в VL, если AI_TENDER_VL_* не заданы."""
@@ -315,6 +324,7 @@ class PipelineState(TypedDict, total=False):
 
     scope_items: list[dict[str, Any]]
     scope_meta: dict[str, Any]
+    qwen_extracted_files: Annotated[list[str], operator.add]
 
     requirements_by_item: list[list[ExtractedRequirement]]
     requirements_stats: dict[str, Any]

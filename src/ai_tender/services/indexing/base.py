@@ -26,6 +26,7 @@ from .persistance import (
     save_product_embeddings,
     save_product_index,
 )
+from .qwen_catalog import try_extract_catalog_qwen
 from .vl_client import complete_vl_json
 
 PAGE_SCAN_SCHEMA_HINT = '{"summary":"","has_products":true}'
@@ -188,7 +189,13 @@ class AssetVlIndexer:
             )
 
         status = IndexingStatus.indexed
-        msg = f"«{name}» — {n} продукт(ов) (VL, слияние по страницам)"
+        qwen_mode = any(
+            "extraction_mode=qwen_whole_file" in w for w in doc_index.warnings
+        ) or any(w.startswith("Qwen catalog route=") for w in warnings)
+        if qwen_mode:
+            msg = f"«{name}» — {n} продукт(ов) (Qwen whole-file)"
+        else:
+            msg = f"«{name}» — {n} продукт(ов) (VL, слияние по страницам)"
         if doc_index.catalog_name:
             msg += f", документ «{doc_index.catalog_name}»"
         if doc_index.product_pages:
@@ -221,12 +228,22 @@ class AssetVlIndexer:
                 ),
                 [f"Файл не найден: {rel}"],
             )
+
+        qwen_index, qwen_warnings = try_extract_catalog_qwen(
+            path,
+            relative_path=rel,
+            context=context,
+        )
+        warnings.extend(qwen_warnings)
+        if qwen_index is not None:
+            return qwen_index, warnings
+
         if path.suffix.lower() != ".pdf":
             return (
                 ProductDocumentIndex(
                     source_file=rel, doc_kind=self.kind, products=[]
                 ),
-                [f"Ожидается PDF: {rel}"],
+                warnings + [f"Ожидается PDF для VL: {rel}"],
             )
 
         filename = Path(rel).name

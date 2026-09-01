@@ -179,15 +179,60 @@ def node_load_next_scope_file(state: PipelineState) -> dict[str, Any]:
 
 def node_extract_scope(state: PipelineState) -> dict[str, Any]:
     from .common import progress
+    from ..extract.qwen_settings import uses_qwen_extract
+    from .scope_qwen import extract_scope_qwen_with_legacy_fallback
 
     settings: Settings = state["settings"]
     progress(state, "LangGraph: предмет закупки (перечень позиций)", 0.32)
+
+    existing_items = list(state.get("scope_items") or [])
+    existing_meta = dict(state.get("scope_meta") or {})
+    existing_reqs = list(state.get("requirements_by_item") or [])
     docs = list(state.get("documents") or [])
+    files_used = list(state.get("scope_files_used") or [])
+    current_label = files_used[-1] if files_used else ""
+
+    updates: dict[str, Any] = {}
+
+    if uses_qwen_extract(settings) and current_label:
+        path = Path(state["tender_path"]) / current_label
+        progress(state, f"Qwen whole-file: {path.name}", 0.34)
+        scope_items, scope_meta, reqs, warnings, qwen_ok = (
+            extract_scope_qwen_with_legacy_fallback(
+                path=path,
+                relative_label=current_label,
+                documents=docs,
+                llm=state["llm"],
+                settings=settings,
+                existing_items=existing_items,
+                existing_meta=existing_meta,
+                existing_reqs=existing_reqs,
+            )
+        )
+        updates["scope_items"] = scope_items
+        updates["scope_meta"] = scope_meta
+        if warnings:
+            updates["warnings"] = warnings
+        if qwen_ok and reqs is not None:
+            updates["requirements_by_item"] = reqs
+            updates["qwen_extracted_files"] = [current_label.replace("\\", "/")]
+            prev_stats = dict(state.get("requirements_stats") or {})
+            updates["requirements_stats"] = {
+                **prev_stats,
+                "mode": "qwen_whole_file",
+                "selected": sum(len(b) for b in reqs),
+                "files_used": list(
+                    dict.fromkeys(list(prev_stats.get("files_used") or []) + [current_label])
+                ),
+            }
+        return updates
+
     scope_items, scope_meta = extract_procurement_scope_from_documents(
         docs,
         state["llm"],
         max_chars_per_doc=settings.max_extract_chars_per_doc,
     )
+    scope_meta["extraction_mode"] = "text_llm"
     return {"scope_items": scope_items, "scope_meta": scope_meta}
 
 

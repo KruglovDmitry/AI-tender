@@ -1,4 +1,4 @@
-"""Тесты VL-индексации эталонов."""
+"""Тесты VL-индексации эталонов и Qwen catalog."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import fitz
+import pytest
 
+from ai_tender.extract.schemas import CatalogExtractResult, ProductRecord
 from ai_tender.models import DocumentKind, IndexingContext, IndexingStatus, Settings
 from ai_tender.services.indexing import AssetVlIndexer, index_asset_files
 from ai_tender.services.indexing.persistance import (
@@ -201,3 +203,95 @@ def test_empty_pages_fail_without_products(tmp_path: Path) -> None:
     assert result.details["product_pages"] == []
     assert load_product_index(cache, "empty.pdf") is None
     assert not json_path_for(cache, "empty.pdf").exists()
+
+
+def _fake_qwen_catalog(path: Path) -> CatalogExtractResult:
+    del path
+    return CatalogExtractResult(
+        catalog_name="Каталог Qwen",
+        products=[
+            ProductRecord(
+                model="UPS-1000",
+                manufacturer="ACME",
+                canonical_desc="ИБП UPS-1000 1000ВА",
+                raw_chunk="UPS-1000 | 1000ВА",
+                characteristics=["напряжение 220 В"],
+            ),
+            ProductRecord(
+                model="UPS-2000",
+                canonical_desc="ИБП UPS-2000",
+                raw_chunk="UPS-2000",
+            ),
+        ],
+    )
+
+
+def test_qwen_catalog_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ai_tender.extract import qwen_settings
+
+    monkeypatch.setattr(qwen_settings, "dashscope_api_key", lambda: "test-key")
+
+    assets = tmp_path / "assets"
+    cache = tmp_path / "cache"
+    assets.mkdir()
+    _write_pdf(assets / "cat.pdf", ["страница с моделями UPS"])
+
+    settings = Settings(
+        cache_dir=cache,
+        embedding_model="fake",
+        extract_backend="qwen",
+    )
+    ctx = IndexingContext(
+        assets_path=assets,
+        cache_dir=cache,
+        embedding_model="fake",
+        extra={
+            "settings": settings,
+            "qwen_catalog_extract": _fake_qwen_catalog,
+            "embed_model": _FakeEmbedder(),
+        },
+    )
+    result = AssetVlIndexer().index(
+        assets / "cat.pdf", relative_path="cat.pdf", context=ctx
+    )
+    assert result.status == IndexingStatus.indexed
+    assert "Qwen whole-file" in result.message
+    index = load_product_index(cache, "cat.pdf")
+    assert index is not None
+    assert len(index.products) == 2
+    assert index.catalog_name == "Каталог Qwen"
+    assert load_product_embeddings(cache, "cat.pdf") is not None
+
+
+def test_qwen_catalog_falls_back_to_vl(tmp_path: Path) -> None:
+    """При extract_backend=legacy Qwen не вызывается — работает VL mock."""
+    assets = tmp_path / "assets"
+    cache = tmp_path / "cache"
+    assets.mkdir()
+    _write_pdf(assets / "cat.pdf", ["страница один UPS-1000 " * 20])
+
+    settings = Settings(
+        cache_dir=cache,
+        embedding_model="fake",
+        extract_backend="legacy",
+    )
+    ctx = IndexingContext(
+        assets_path=assets,
+        cache_dir=cache,
+        embedding_model="fake",
+        vl_max_pages=10,
+        extra={
+            "settings": settings,
+            "qwen_catalog_extract": _fake_qwen_catalog,
+            "vl_complete": _fake_vl,
+            "embed_model": _FakeEmbedder(),
+        },
+    )
+    result = AssetVlIndexer().index(
+        assets / "cat.pdf", relative_path="cat.pdf", context=ctx
+    )
+    assert result.status == IndexingStatus.indexed
+    assert "VL" in result.message
+    index = load_product_index(cache, "cat.pdf")
+    assert index is not None
+    assert any(p.model == "UPS-1000" for p in index.products)

@@ -1,4 +1,4 @@
-"""Оркестрация: PDF эталонов → постраничный VL extract (без classify)."""
+"""Оркестрация: PDF эталонов → Qwen whole-file или постраничный VL."""
 
 from __future__ import annotations
 
@@ -17,15 +17,18 @@ def index_asset_files(
     settings: Settings | None = None,
     extra: dict | None = None,
 ) -> tuple[list[IndexingResult], list[str]]:
-    """Индексирует каждый PDF постранично через VL. → (results, warnings)."""
+    """Индексирует каждый эталон через Qwen (если включён) или VL. → (results, warnings)."""
     assets_path = assets_path.expanduser().resolve()
     cache_dir = cache_dir.expanduser().resolve()
+    extra_dict = dict(extra or {})
+    if settings is not None:
+        extra_dict.setdefault("settings", settings)
 
     if settings is None:
         context = IndexingContext(
             assets_path=assets_path,
             cache_dir=cache_dir,
-            extra=dict(extra or {}),
+            extra=extra_dict,
         )
     else:
         context = IndexingContext(
@@ -40,7 +43,7 @@ def index_asset_files(
             vl_image_scale=settings.vl_image_scale,
             vl_timeout_sec=settings.vl_timeout_sec,
             vl_max_output_tokens=settings.vl_max_output_tokens,
-            extra=dict(extra or {}),
+            extra=extra_dict,
         )
 
     indexer = AssetVlIndexer()

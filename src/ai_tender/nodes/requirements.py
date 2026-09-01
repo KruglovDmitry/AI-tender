@@ -413,6 +413,19 @@ def node_extract_requirements(state: PipelineState) -> dict[str, Any]:
     if not current:
         return {}
 
+    qwen_files = {
+        label.replace("\\", "/")
+        for label in (state.get("qwen_extracted_files") or [])
+    }
+    current_norm = current.replace("\\", "/")
+    if current_norm in qwen_files:
+        tried = list(state.get("requirement_files_tried") or [])
+        if current not in tried:
+            tried.append(current)
+        return {
+            "requirement_files_tried": tried,
+        }
+
     progress(
         state,
         f"Требования из {Path(current).name} (макс. {settings.max_reqs_per_scope_item}/позиция)",
