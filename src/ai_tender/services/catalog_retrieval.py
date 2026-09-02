@@ -36,7 +36,52 @@ class ProductCatalog:
 
 
 def embedding_text(product: Product) -> str:
-    return (product.canonical_desc or product.model or product.raw_chunk or product.id).strip() or product.id
+    """Текст для эмбеддинга и keyword-поиска: модель + описание + характеристики."""
+    parts: list[str] = []
+    for value in (
+        product.model,
+        product.manufacturer,
+        product.category,
+        product.canonical_desc,
+    ):
+        text = str(value or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    if product.characteristics:
+        parts.extend(str(c).strip() for c in product.characteristics if str(c).strip())
+    if product.standards:
+        parts.extend(str(s).strip() for s in product.standards if str(s).strip())
+    chunk = str(product.raw_chunk or "").strip()
+    if chunk and chunk not in parts and chunk not in (product.canonical_desc or ""):
+        parts.append(chunk)
+    return "\n".join(parts).strip() or product.id
+
+
+def _query_terms(query: str) -> list[str]:
+    import re
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[\w\d]+", query.casefold()):
+        if len(token) < 3 or token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+    return terms
+
+
+def _keyword_overlap_score(query: str, product: Product) -> float:
+    terms = _query_terms(query)
+    if not terms:
+        return 0.0
+    haystack = embedding_text(product).casefold()
+    hits = sum(1 for term in terms if term in haystack)
+    return hits / len(terms)
+
+
+def _combine_scores(vector_score: float, keyword_score: float) -> float:
+    # Keyword помогает, когда в характеристиках явно указан аналог (Moxa NPort …).
+    return 0.65 * vector_score + 0.35 * keyword_score
 
 
 def format_product_quote(
@@ -202,7 +247,15 @@ def search_catalog(
     if catalog.size == 0:
         return []
     q = embed_query(query, embedding_model=embedding_model, device=device)
-    scores = catalog.vectors @ q
+    vector_scores = catalog.vectors @ q
+    keyword_scores = np.array(
+        [_keyword_overlap_score(query, catalog.products[i]) for i in range(catalog.size)],
+        dtype=np.float32,
+    )
+    scores = np.array(
+        [_combine_scores(float(vector_scores[i]), float(keyword_scores[i])) for i in range(catalog.size)],
+        dtype=np.float32,
+    )
     k = min(max(top_k, 1), catalog.size)
     if k == catalog.size:
         top_idx = np.argsort(-scores)

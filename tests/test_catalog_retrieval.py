@@ -6,17 +6,31 @@ from ai_tender.services.catalog_retrieval import (
     catalog_hit_to_evidence,
     embedding_text,
     search_catalog,
+    _keyword_overlap_score,
 )
 
 
-def test_embedding_text_prefers_canonical_desc() -> None:
+def test_embedding_text_includes_characteristics_for_search() -> None:
+    product = Product(
+        id="a",
+        model="Преобразователь Modbus RTU - Modbus TCP",
+        canonical_desc="Преобразователь Modbus RTU в Modbus TCP",
+        characteristics=["Полный аналог Moxa NPort 5150/5130/5120"],
+    )
+    text = embedding_text(product)
+    assert "Modbus RTU" in text
+    assert "Moxa NPort 5150" in text
+
+
+def test_embedding_text_prefers_rich_fields_over_id() -> None:
     product = Product(
         id="a",
         model="SR33020",
         canonical_desc="ИБП 20 кВА",
         raw_chunk="chunk",
     )
-    assert embedding_text(product) == "ИБП 20 кВА"
+    assert "SR33020" in embedding_text(product)
+    assert "ИБП 20 кВА" in embedding_text(product)
 
 
 def test_search_catalog_returns_top_by_cosine(monkeypatch) -> None:
@@ -53,6 +67,17 @@ def test_search_catalog_returns_top_by_cosine(monkeypatch) -> None:
     assert len(hits) == 2
     assert hits[0].product.model == "MIR S-05"
     assert hits[0].score > hits[1].score
+
+
+def test_keyword_overlap_finds_analogue_in_characteristics() -> None:
+    product = Product(
+        id="m",
+        model="Преобразователь Modbus RTU - Modbus TCP",
+        canonical_desc="Преобразователь Modbus RTU в Modbus TCP",
+        characteristics=["Полный аналог Moxa NPort 5150/5130/5120"],
+    )
+    score = _keyword_overlap_score("MOXA NPORT 5150", product)
+    assert score >= 0.66
 
 
 def test_catalog_hit_to_evidence_contains_model() -> None:

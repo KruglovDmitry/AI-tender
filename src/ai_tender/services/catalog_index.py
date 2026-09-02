@@ -29,6 +29,7 @@ from .catalog_persistence import (
     save_product_embeddings,
     save_product_index,
 )
+from .catalog_retrieval import embedding_text
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +159,7 @@ def _persist_index(
     _index_log(rel, f"persist: JSON + embeddings для {len(index.products)} продуктов")
     save_product_index(context.cache_dir, index)
 
-    texts = [
-        (p.canonical_desc or p.model or p.raw_chunk or p.id).strip() or p.id
-        for p in index.products
-    ]
+    texts = [embedding_text(p) for p in index.products]
     ids = [p.id for p in index.products]
     vectors = _embed_texts(texts, context)
     save_product_embeddings(
