@@ -9,6 +9,7 @@ from typing import Any
 
 from llama_index.core.llms import LLM
 
+from .extract.qwen_extract import dashscope_api_key
 from .models import Settings
 
 
@@ -189,30 +190,54 @@ def complete_llm_json(
     return try_parse_llm_json(repaired_raw), 2
 
 
+def _openai_like_llm(
+    *,
+    model: str,
+    api_base: str,
+    api_key: str,
+) -> LLM:
+    from llama_index.llms.openai_like import OpenAILike
+
+    base = (api_base or "").strip().rstrip("/")
+    return OpenAILike(
+        model=model,
+        api_base=base,
+        api_key=api_key,
+        is_chat_model=True,
+        is_function_calling_model=False,
+        temperature=0,
+    )
+
+
 def build_llm(settings: Settings) -> LLM:
     provider = settings.llm_provider.lower().strip()
+
     if provider == "openai":
         from llama_index.llms.openai import OpenAI
 
-        api_key = os.getenv("OPENAI_API_KEY") or "EMPTY"
         return OpenAI(
             model=settings.llm_model,
-            api_key=api_key,
+            api_key=os.getenv("OPENAI_API_KEY") or "EMPTY",
             api_base=settings.openai_base_url,
             temperature=0,
         )
 
-    from llama_index.llms.openai_like import OpenAILike
+    if provider == "qwen":
+        api_key = dashscope_api_key()
+        if not api_key:
+            raise ValueError("Не указан QWEN_API_KEY или DASHSCOPE_API_KEY")
+        return _openai_like_llm(
+            model=settings.llm_model,
+            api_base=settings.qwen_base_url,
+            api_key=api_key,
+        )
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         raise ValueError("Не указан DEEPSEEK_API_KEY")
 
-    return OpenAILike(
+    return _openai_like_llm(
         model=settings.llm_model,
         api_base=settings.deepseek_base_url,
         api_key=api_key,
-        is_chat_model=True,
-        is_function_calling_model=False,
-        temperature=0,
     )

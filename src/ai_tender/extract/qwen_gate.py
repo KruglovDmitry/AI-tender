@@ -132,4 +132,4 @@ def can_send_to_qwen(path: Path, *, purpose: str = "extract") -> GateDecision:
             )
 
     # TODO: эвристика qwen_long (много файлов / оценка токенов > порога doc).
-    return GateDecision(True, ExtractRoute.qwen_doc, "текстовый документ → qwen-doc-turbo")
+    return GateDecision(True, ExtractRoute.qwen_doc, "текстовый документ → qwen-plus (local text)")

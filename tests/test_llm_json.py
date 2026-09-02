@@ -82,3 +82,12 @@ def test_complete_llm_json_repairs_invalid() -> None:
     assert data == {"found": False, "requirements": []}
     assert n == 2
     assert llm.calls == 2
+
+
+def test_build_llm_qwen(monkeypatch) -> None:
+    from ai_tender.models import Settings
+    from ai_tender.providers import build_llm
+
+    monkeypatch.setenv("QWEN_API_KEY", "test-key")
+    llm = build_llm(Settings(llm_provider="qwen", llm_model="qwen-plus"))
+    assert llm.model == "qwen-plus"

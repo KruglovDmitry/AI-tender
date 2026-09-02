@@ -187,8 +187,8 @@ class Settings(BaseSettings):
     # Embeddings (локально) + LLM (API)
     embedding_model: str = "BAAI/bge-m3"
     embedding_device: str | None = None
-    llm_provider: str = "deepseek"  # deepseek | openai
-    llm_model: str = "deepseek-chat"
+    llm_provider: str = "qwen"  # qwen | deepseek | openai
+    llm_model: str = "qwen-plus"
     deepseek_base_url: str = "https://api.deepseek.com"
     openai_base_url: str = "https://api.openai.com/v1"
 
@@ -216,9 +216,10 @@ class Settings(BaseSettings):
     # Whole-file извлечение Qwen DashScope (отдельно от match LLM).
     extract_backend: str = "qwen"
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    qwen_doc_model: str = "qwen-doc-turbo"
+    # Whole-file extract: intl (Singapore) — qwen-plus + fileid://; Beijing — qwen-doc-turbo / qwen-long
+    qwen_doc_model: str = "qwen-plus"
     qwen_long_model: str = "qwen-long"
-    qwen_extract_schema_version: str = "1"
+    qwen_extract_schema_version: str = "2"
     qwen_max_file_mb: int = 150
 
 

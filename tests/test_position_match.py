@@ -248,7 +248,7 @@ def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:
         llm,
         scope_item,
         requirements,
-        product_catalog,
+        catalog,
         top_k,
         user_instruction,
         embedding_model,
@@ -258,7 +258,7 @@ def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:
         calls.append(name)
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.partial)
 
-    monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
+    monkeypatch.setattr(match_mod, "match_one_position", fake_match_one)
     from ai_tender.services.catalog_retrieval import ProductCatalog
 
     settings = Settings(match_parallelism=4)
@@ -285,7 +285,7 @@ def test_node_match_positions_isolates_errors(monkeypatch) -> None:
         llm,
         scope_item,
         requirements,
-        product_catalog,
+        catalog,
         top_k,
         user_instruction,
         embedding_model,
@@ -296,7 +296,7 @@ def test_node_match_positions_isolates_errors(monkeypatch) -> None:
             raise RuntimeError("boom")
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.matched)
 
-    monkeypatch.setattr(match_mod, "_match_one_position", fake_match_one)
+    monkeypatch.setattr(match_mod, "match_one_position", fake_match_one)
     from ai_tender.services.catalog_retrieval import ProductCatalog
 
     settings = Settings(match_parallelism=2)

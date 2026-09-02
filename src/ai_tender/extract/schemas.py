@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-# Инкремент при изменении промпта/полей — инвалидирует кэш.
-EXTRACT_SCHEMA_VERSION = "1"
+# Инкремент при изменении промпта/полей/маршрута извлечения — инвалидирует кэш.
+EXTRACT_SCHEMA_VERSION = "2"
 
 
 class ProductRecord(BaseModel):

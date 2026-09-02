@@ -8,8 +8,6 @@ graph TD;
 	select_files(select_files)
 	load_next_scope_file(load_next_scope_file)
 	extract_scope(extract_scope)
-	load_next_requirement_file(load_next_requirement_file)
-	extract_requirements(extract_requirements)
 	build_assets_index(build_assets_index)
 	match_positions(match_positions)
 	build_verdict(build_verdict)
@@ -18,11 +16,8 @@ graph TD;
 	__start__ --> select_files;
 	build_assets_index --> match_positions;
 	build_verdict --> finalize;
-	extract_requirements -.-> build_assets_index;
-	extract_requirements -.-> load_next_requirement_file;
-	extract_scope -.-> load_next_requirement_file;
+	extract_scope -.-> build_assets_index;
 	extract_scope -.-> load_next_scope_file;
-	load_next_requirement_file --> extract_requirements;
 	load_next_scope_file --> extract_scope;
 	match_positions --> build_verdict;
 	select_files --> load_next_scope_file;
