@@ -30,8 +30,8 @@ export async function fetchConfig(): Promise<AppConfig> {
   return request<AppConfig>("/api/config");
 }
 
-export async function fetchOcrStatus(): Promise<{ ok: boolean; hint: string }> {
-  return request("/api/ocr-status");
+export async function fetchVlStatus(): Promise<{ ok: boolean; hint: string }> {
+  return request("/api/vl-status");
 }
 
 export async function fetchAssets(assetsPath?: string): Promise<{

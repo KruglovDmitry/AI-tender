@@ -9,7 +9,7 @@ from typing import Any
 from llama_index.core import Document
 
 from ..services.loader_service import load_documents
-from ..models import Evidence, PipelineState, Settings
+from ..models import Evidence, PipelineState
 
 EXT_PREF = {
     ".docx": 0,
@@ -42,14 +42,13 @@ def next_unloaded(state: PipelineState) -> str | None:
 def load_labels(state: PipelineState, labels: list[str]) -> tuple[list[Document], list[str]]:
     if not labels:
         return [], []
-    settings: Settings = state["settings"]
     docs, warns = load_documents(
         Path(state["tender_path"]),
         corpus="tender",
         inventory=state.get("inventory"),
         only_labels=set(labels),
-        ocr_enabled=settings.ocr_enabled,
-        ocr_languages=settings.ocr_languages,
+        ocr_enabled=False,
+        ocr_languages="rus+eng",
     )
     return docs, warns
 

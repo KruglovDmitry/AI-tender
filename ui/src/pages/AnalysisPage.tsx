@@ -19,8 +19,7 @@ export function AnalysisPage() {
 
   const buildForm = (uploadFiles: File[]) => {
     const form = new FormData();
-    form.append("llm_provider", settings.llmProvider);
-    form.append("ocr_enabled", String(settings.ocrEnabled));
+    form.append("vl_enabled", String(settings.vlEnabled));
     form.append("max_reqs_per_scope_item", String(settings.maxReqs));
     form.append("tender_source", settings.tenderSource);
     form.append("tender_folder", settings.tenderPath);

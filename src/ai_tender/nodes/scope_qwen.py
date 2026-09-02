@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..extract.qwen_gate import ExtractRoute
 from ..extract.qwen_settings import build_qwen_extractor
 from ..extract.tender_adapter import (
     TENDER_QWEN_PROMPT,
@@ -35,21 +34,13 @@ def extract_scope_qwen_from_file(
     warnings: list[str] = []
     extractor = build_qwen_extractor(settings)
     gate = extractor.gate(path, purpose="tender")
-
-    if gate.route == ExtractRoute.qwen_scan:
-        raise NotImplementedError(
-            f"{relative_label}: скан — Qwen scan-контракт ещё не реализован ({gate.reason})"
-        )
-
-    if not gate.sends_to_qwen_doc:
-        raise ValueError(gate.reason)
-
     result = extractor.extract_tender(path, prompt=TENDER_QWEN_PROMPT)
+    route = "qwen_scan" if extractor.should_use_vl(gate) else str(gate.route)
     trace_note(
         "extract_scope_qwen",
         f"Qwen tender: {Path(relative_label).name}",
         meta={
-            "route": str(gate.route),
+            "route": route,
             "items": len(result.scope_items),
             "file": relative_label,
         },

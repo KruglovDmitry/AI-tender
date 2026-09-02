@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { fetchConfig, fetchOcrStatus } from "../api";
+import { fetchConfig, fetchVlStatus } from "../api";
 import {
   alertWarningClass,
   btnGroupClass,
@@ -14,8 +14,7 @@ import {
 import type { AppConfig } from "../types";
 
 export interface SettingsState {
-  llmProvider: string;
-  ocrEnabled: boolean;
+  vlEnabled: boolean;
   maxReqs: number;
   assetsPath: string;
   tenderPath: string;
@@ -27,8 +26,8 @@ interface SettingsContextValue {
   config: AppConfig | null;
   settings: SettingsState;
   setSettings: React.Dispatch<React.SetStateAction<SettingsState>>;
-  ocrOk: boolean;
-  ocrHint: string;
+  vlOk: boolean;
+  vlHint: string;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -36,37 +35,35 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settings, setSettings] = useState<SettingsState>({
-    llmProvider: "deepseek",
-    ocrEnabled: true,
+    vlEnabled: true,
     maxReqs: 10,
     assetsPath: "",
     tenderPath: "",
     tenderSource: "upload",
     reportDownloadFormat: "md",
   });
-  const [ocrOk, setOcrOk] = useState(true);
-  const [ocrHint, setOcrHint] = useState("");
+  const [vlOk, setVlOk] = useState(true);
+  const [vlHint, setVlHint] = useState("");
 
   useEffect(() => {
     void (async () => {
-      const [cfg, ocr] = await Promise.all([fetchConfig(), fetchOcrStatus()]);
+      const [cfg, vl] = await Promise.all([fetchConfig(), fetchVlStatus()]);
       setConfig(cfg);
       setSettings((prev) => ({
         ...prev,
-        llmProvider: cfg.llm_provider,
-        ocrEnabled: cfg.ocr_enabled,
+        vlEnabled: cfg.vl_enabled,
         maxReqs: cfg.max_reqs_per_scope_item,
         assetsPath: cfg.default_assets_path,
         tenderPath: cfg.default_tender_path,
       }));
-      setOcrOk(ocr.ok);
-      setOcrHint(ocr.hint);
+      setVlOk(vl.ok);
+      setVlHint(vl.hint);
     })();
   }, []);
 
   const value = useMemo(
-    () => ({ config, settings, setSettings, ocrOk, ocrHint }),
-    [config, settings, ocrOk, ocrHint],
+    () => ({ config, settings, setSettings, vlOk, vlHint }),
+    [config, settings, vlOk, vlHint],
   );
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
@@ -79,7 +76,7 @@ export function useSettings() {
 }
 
 export function SettingsPanel() {
-  const { config, settings, setSettings, ocrOk, ocrHint } = useSettings();
+  const { config, settings, setSettings, vlOk, vlHint } = useSettings();
 
   if (!config) {
     return <p className={mutedTextClass}>Загрузка настроек…</p>;
@@ -87,21 +84,6 @@ export function SettingsPanel() {
 
   return (
     <div className="grid gap-4">
-        <div>
-          <label className={labelClass} htmlFor="llm-provider">
-            LLM-провайдер
-          </label>
-          <select
-            id="llm-provider"
-            className={selectClass}
-            value={settings.llmProvider}
-            onChange={(e) => setSettings((s) => ({ ...s, llmProvider: e.target.value }))}
-          >
-            <option value="deepseek">DeepSeek</option>
-            <option value="openai">Local</option>
-          </select>
-        </div>
-
         <div>
           <span className={labelClass}>Файлы тендера</span>
           <div className={`${btnGroupClass} w-full`} role="group">
@@ -144,20 +126,23 @@ export function SettingsPanel() {
           </div>
         )}
 
-        <div className="flex items-center gap-2">
+        <div
+          className="flex items-center gap-2"
+          title={`Сканы без текста всегда идут через VL (${config.qwen_vl_model}). Включите переключатель, чтобы VL использовался и для текстовых PDF.`}
+        >
           <input
-            id="ocr-enabled"
+            id="vl-enabled"
             type="checkbox"
-            checked={settings.ocrEnabled}
-            onChange={(e) => setSettings((s) => ({ ...s, ocrEnabled: e.target.checked }))}
+            checked={settings.vlEnabled}
+            onChange={(e) => setSettings((s) => ({ ...s, vlEnabled: e.target.checked }))}
             className="size-4 rounded border-gray-300 text-blue-800 focus:ring-blue-800/30"
           />
-          <label htmlFor="ocr-enabled" className="text-sm text-gray-700">
-            OCR для сканов PDF
+          <label htmlFor="vl-enabled" className="text-sm text-gray-700">
+            VL-модель для извлечения
           </label>
         </div>
 
-        {!ocrOk && settings.ocrEnabled && <p className={alertWarningClass}>{ocrHint}</p>}
+        {!vlOk && <p className={alertWarningClass}>{vlHint}</p>}
 
         <div>
           <label className={labelClass} htmlFor="max-reqs">

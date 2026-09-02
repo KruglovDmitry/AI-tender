@@ -10,7 +10,6 @@ import numpy as np
 
 from ..extract.catalog_adapter import CATALOG_QWEN_PROMPT, catalog_result_to_index
 from ..extract.qwen_extract import QwenExtractor
-from ..extract.qwen_gate import ExtractRoute
 from ..extract.qwen_settings import build_qwen_extractor, uses_qwen_extract
 from ..extract.schemas import CatalogExtractResult
 from ..models import (
@@ -87,16 +86,19 @@ def extract_catalog_qwen(
         result = custom(path)
     else:
         if extractor is None:
-            extractor = build_qwen_extractor(settings)
+            progress_cb = context.extra.get("on_index_progress")
+
+            def _vl_progress(message: str) -> None:
+                _index_log(rel, message)
+                if callable(progress_cb):
+                    progress_cb("vl", 0, 0, message)
+
+            extractor = build_qwen_extractor(settings, on_progress=_vl_progress)
         gate = extractor.gate(path, purpose="catalog")
-        if gate.route == ExtractRoute.qwen_scan:
-            raise NotImplementedError(
-                f"Скан «{rel}» — Qwen scan-контракт ещё не реализован ({gate.reason})"
-            )
-        if not gate.sends_to_qwen_doc:
-            raise ValueError(gate.reason)
         result = extractor.extract_catalog(path, prompt=CATALOG_QWEN_PROMPT)
-        warnings.append(f"Qwen catalog route={gate.route}")
+        warnings.append(
+            f"Qwen catalog route={'qwen_scan' if extractor.should_use_vl(gate) else gate.route}"
+        )
 
     index = catalog_result_to_index(
         result,

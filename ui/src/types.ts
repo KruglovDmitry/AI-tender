@@ -1,7 +1,8 @@
 export interface AppConfig {
   llm_provider: string;
   llm_model: string;
-  ocr_enabled: boolean;
+  vl_enabled: boolean;
+  qwen_vl_model: string;
   max_reqs_per_scope_item: number;
   embedding_model: string;
   default_tender_path: string;

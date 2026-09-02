@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from ai_tender.extract.qwen_extract import dashscope_api_key
 from ai_tender.graph import analyze
 from ai_tender.models import AnalysisReport, get_settings
 from ai_tender.services.index_service import delete_asset_file, scan_assets_files
@@ -19,7 +20,6 @@ from ai_tender.services.catalog_persistence import (
     catalog_is_indexed,
     load_product_index,
 )
-from ai_tender.services.ocr_service import ocr_status
 from ai_tender.services.report_export import report_to_json_bytes, report_to_markdown
 from ai_tender.services.upload_service import (
     append_uploaded_files,
@@ -102,7 +102,8 @@ def get_config() -> dict[str, Any]:
     return {
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
-        "ocr_enabled": settings.ocr_enabled,
+        "vl_enabled": settings.vl_enabled,
+        "qwen_vl_model": settings.qwen_vl_model,
         "max_reqs_per_scope_item": settings.max_reqs_per_scope_item,
         "embedding_model": settings.embedding_model,
         "default_tender_path": default_tender_path(),
@@ -111,10 +112,18 @@ def get_config() -> dict[str, Any]:
     }
 
 
-@router.get("/ocr-status")
-def api_ocr_status() -> dict[str, Any]:
-    ok, hint = ocr_status()
-    return {"ok": ok, "hint": hint}
+@router.get("/vl-status")
+def api_vl_status() -> dict[str, Any]:
+    settings = get_settings()
+    if not dashscope_api_key():
+        return {
+            "ok": False,
+            "hint": "Задайте QWEN_API_KEY или DASHSCOPE_API_KEY для VL-извлечения",
+        }
+    return {
+        "ok": True,
+        "hint": f"VL модель: {settings.qwen_vl_model}",
+    }
 
 
 @router.get("/assets")
@@ -275,8 +284,7 @@ def reindex_asset(body: ReindexAssetRequest, assets_path: str | None = None) -> 
 
 @router.post("/analyze")
 async def start_analyze(
-    llm_provider: Annotated[str, Form()] = "deepseek",
-    ocr_enabled: Annotated[bool, Form()] = True,
+    vl_enabled: Annotated[bool, Form()] = True,
     max_reqs_per_scope_item: Annotated[int, Form()] = 10,
     tender_source: Annotated[str, Form()] = "upload",
     tender_folder: Annotated[str, Form()] = "",
@@ -288,10 +296,16 @@ async def start_analyze(
     if not assets_root.is_dir():
         raise HTTPException(status_code=400, detail="Каталог эталонов не существует")
 
-    provider = llm_provider.lower().strip()
+    provider = settings.llm_provider.lower().strip()
     if provider == "deepseek":
         if not os.getenv("DEEPSEEK_API_KEY"):
             raise HTTPException(status_code=400, detail="Не задан DEEPSEEK_API_KEY в окружении")
+    elif provider == "qwen":
+        if not (os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")):
+            raise HTTPException(
+                status_code=400,
+                detail="Не задан QWEN_API_KEY или DASHSCOPE_API_KEY в окружении",
+            )
     elif not os.getenv("OPENAI_API_KEY"):
         os.environ["OPENAI_API_KEY"] = "EMPTY"
 
@@ -309,8 +323,7 @@ async def start_analyze(
         progress = job_manager.make_progress(job.id)
         runtime_settings = settings.model_copy(
             update={
-                "llm_provider": provider,
-                "ocr_enabled": ocr_enabled,
+                "vl_enabled": vl_enabled,
                 "max_reqs_per_scope_item": max_reqs_per_scope_item,
             }
         )

@@ -208,8 +208,8 @@ class Settings(BaseSettings):
 
     user_instruction: str = DEFAULT_USER_INSTRUCTION
 
-    ocr_enabled: bool = True
-    ocr_languages: str = "rus+eng"
+    # VL для сканов (нет текстового слоя) или принудительно для всех файлов.
+    vl_enabled: bool = True
 
     cache_dir: Path = Path("data/cache")
 
@@ -219,7 +219,10 @@ class Settings(BaseSettings):
     # Whole-file extract: intl (Singapore) — qwen-plus + fileid://; Beijing — qwen-doc-turbo / qwen-long
     qwen_doc_model: str = "qwen-plus"
     qwen_long_model: str = "qwen-long"
-    qwen_extract_schema_version: str = "2"
+    qwen_vl_model: str = "qwen-vl-plus"
+    qwen_vl_pages_per_call: int = 2
+    qwen_vl_max_pages: int = 80
+    qwen_extract_schema_version: str = "3"
     qwen_max_file_mb: int = 150
 
 
