@@ -29,6 +29,31 @@ def test_try_parse_llm_json_returns_none_on_garbage() -> None:
     assert try_parse_llm_json("not json at all {") is None
 
 
+def test_salvage_truncated_scope_items() -> None:
+    raw = '''```json
+{
+  "scope_summary": "Поставка кабеля",
+  "scope_items": [
+    {
+      "name": "Кабель A",
+      "qty": 10,
+      "unit": "м",
+      "confidence": 0.9,
+      "quote": "Кабель A",
+      "requirements": [{"text": "кат. 5e", "kind": "specs", "priority": 2, "confidence": 0.9}]
+    },
+    {
+      "name": "Кабель B",
+      "qty": 505,
+      "unit": "м",
+      "requirements": [{"text": "Тип: витая пара, сечение: S24, защита: LSZH (негорючая обо'''
+    data = try_parse_llm_json(raw)
+    assert data is not None
+    assert data["scope_summary"] == "Поставка кабеля"
+    assert len(data["scope_items"]) == 1
+    assert data["scope_items"][0]["name"] == "Кабель A"
+
+
 def test_parse_llm_json_still_raises_on_unfixable() -> None:
     try:
         parse_llm_json('{"items": [{"text": "broken "quote"}]}')

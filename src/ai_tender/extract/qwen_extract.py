@@ -32,7 +32,12 @@ DATA_EGRESS_WARNING = (
 )
 # qwen-long / qwen-doc-turbo читают fileid://; chat-модели intl (qwen-plus) — только локальный текст.
 FILE_EXTRACT_NATIVE_MODELS = frozenset({"qwen-long", "qwen-doc-turbo"})
-MAX_LOCAL_TEXT_CHARS = 120_000
+TEXT_CHUNK_CHARS = 28_000
+TEXT_CHUNK_OVERLAP = 1_200
+# DashScope compatible-mode: max_tokens ∈ [1, 8192]
+EXTRACT_MAX_OUTPUT_TOKENS = 8_192
+# Для больших текстовых PDF VL по страницам ненадёжен — лучше local-text chunks.
+VL_MAX_TEXT_PAGES = 12
 
 
 def dashscope_api_key() -> str:
@@ -93,6 +98,41 @@ def upload_file(path: Path, *, base_url: str) -> str:
     return file_id
 
 
+def _pdf_page_count(path: Path) -> int | None:
+    if path.suffix.lower() != ".pdf":
+        return None
+    try:
+        import fitz
+
+        with fitz.open(path) as doc:
+            return int(doc.page_count)
+    except Exception:
+        return None
+
+
+def _chunk_document_text(
+    text: str,
+    *,
+    chunk_chars: int = TEXT_CHUNK_CHARS,
+    overlap: int = TEXT_CHUNK_OVERLAP,
+) -> list[str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= chunk_chars:
+        return [cleaned]
+    chunks: list[str] = []
+    step = max(1, chunk_chars - overlap)
+    start = 0
+    while start < len(cleaned):
+        end = min(len(cleaned), start + chunk_chars)
+        chunks.append(cleaned[start:end])
+        if end >= len(cleaned):
+            break
+        start += step
+    return chunks
+
+
 def _call_extract_model(
     *,
     base_url: str,
@@ -122,6 +162,7 @@ def _call_extract_model(
                 model=model,
                 messages=messages,
                 temperature=0,
+                max_tokens=EXTRACT_MAX_OUTPUT_TOKENS,
             )
             choice = response.choices[0] if response.choices else None
             return (choice.message.content or "") if choice else ""
@@ -146,16 +187,12 @@ def _call_text_extract_model(
     document_text: str,
     prompt: str,
     schema_hint: str,
+    fragment_note: str = "",
 ) -> str:
     client = _openai_client(base_url)
-    body = document_text[:MAX_LOCAL_TEXT_CHARS]
-    if len(document_text) > MAX_LOCAL_TEXT_CHARS:
-        logger.warning(
-            "Qwen local-text extract truncated %s → %s chars",
-            len(document_text),
-            MAX_LOCAL_TEXT_CHARS,
-        )
-    user_content = f"{prompt}\n\n--- ДОКУМЕНТ ---\n{body}"
+    body = document_text
+    note = f"\n{fragment_note}\n" if fragment_note else "\n"
+    user_content = f"{prompt}{note}--- ДОКУМЕНТ ---\n{body}"
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -169,9 +206,17 @@ def _call_text_extract_model(
             {"role": "user", "content": user_content},
         ],
         temperature=0,
+        max_tokens=EXTRACT_MAX_OUTPUT_TOKENS,
     )
     choice = response.choices[0] if response.choices else None
-    return (choice.message.content or "") if choice else ""
+    finish = getattr(choice, "finish_reason", None) if choice else None
+    raw = (choice.message.content or "") if choice else ""
+    if finish == "length":
+        logger.warning(
+            "Qwen extract output truncated (finish_reason=length, chars=%s)",
+            len(raw),
+        )
+    return raw
 
 
 def _parse_model_result(raw: str, model_cls: type[T]) -> T:
@@ -217,7 +262,7 @@ def _call_vl_extract_model(
             {"role": "user", "content": content},
         ],
         temperature=0,
-        max_tokens=4096,
+        max_tokens=EXTRACT_MAX_OUTPUT_TOKENS,
     )
     choice = response.choices[0] if response.choices else None
     return (choice.message.content or "") if choice else ""
@@ -311,9 +356,23 @@ class QwenExtractor:
     def gate(self, path: Path, *, purpose: str) -> GateDecision:
         return can_send_to_qwen(path, purpose=purpose)
 
-    def should_use_vl(self, gate: GateDecision) -> bool:
-        """VL: нет текстового слоя/картинка, либо принудительно в настройках."""
-        return self.vl_enabled or gate.route == ExtractRoute.qwen_scan
+    def should_use_vl(self, gate: GateDecision, path: Path | None = None) -> bool:
+        """VL: сканы всегда; текстовые PDF — только если включено и документ небольшой."""
+        if gate.route == ExtractRoute.qwen_scan:
+            return True
+        if not self.vl_enabled:
+            return False
+        if path is not None and path.suffix.lower() == ".pdf":
+            pages = _pdf_page_count(path)
+            if pages is not None and pages > VL_MAX_TEXT_PAGES:
+                logger.info(
+                    "VL пропущен для %s: %s стр. > %s — local-text extract",
+                    path.name,
+                    pages,
+                    VL_MAX_TEXT_PAGES,
+                )
+                return False
+        return True
 
     def _model_for_route(self, route: ExtractRoute) -> str:
         if route == ExtractRoute.qwen_long:
@@ -356,26 +415,56 @@ class QwenExtractor:
                 schema_hint=schema_hint,
             )
             route = str(gate.route)
+            parsed = _parse_model_result(raw, result_cls)
         else:
             local_text = _read_local_document_text(path)
             if not local_text.strip():
                 raise ValueError(f"не удалось извлечь локальный текст из {path.name}")
             file_id = ""
             route = "qwen_local_text"
+            chunks = _chunk_document_text(local_text)
             logger.info(
-                "Qwen local-text extract %s via %s (%s chars)",
+                "Qwen local-text extract %s via %s (%s chars, %s chunk(s))",
                 path.name,
                 model,
                 len(local_text),
+                len(chunks),
             )
-            raw = _call_text_extract_model(
-                base_url=self.base_url,
-                model=model,
-                document_text=local_text,
-                prompt=prompt,
-                schema_hint=schema_hint,
-            )
-        parsed = _parse_model_result(raw, result_cls)
+            if len(chunks) == 1:
+                raw = _call_text_extract_model(
+                    base_url=self.base_url,
+                    model=model,
+                    document_text=chunks[0],
+                    prompt=prompt,
+                    schema_hint=schema_hint,
+                )
+                parsed = _parse_model_result(raw, result_cls)
+            else:
+                parts: list[Any] = []
+                for idx, chunk in enumerate(chunks, start=1):
+                    self._emit(
+                        f"Qwen {path.name}: фрагмент {idx}/{len(chunks)} "
+                        f"({len(chunk)} символов)"
+                    )
+                    raw = _call_text_extract_model(
+                        base_url=self.base_url,
+                        model=model,
+                        document_text=chunk,
+                        prompt=prompt,
+                        schema_hint=schema_hint,
+                        fragment_note=(
+                            f"Это фрагмент {idx} из {len(chunks)} большого документа. "
+                            "Извлеки ВСЕ позиции только из этого фрагмента "
+                            "(без лимита 50/100); не выдумывай данные из других частей."
+                        ),
+                    )
+                    parts.append(_parse_model_result(raw, result_cls))
+                if result_cls is CatalogExtractResult:
+                    parsed = _merge_catalog_results(parts)  # type: ignore[arg-type]
+                elif result_cls is TenderExtractResult:
+                    parsed = _merge_tender_results(parts)  # type: ignore[arg-type]
+                else:
+                    parsed = parts[0]
         self.cache.put(
             kind=kind,
             content_hash=digest,
@@ -446,7 +535,7 @@ class QwenExtractor:
     def extract_catalog(self, path: Path, *, prompt: str) -> CatalogExtractResult:
         gate = self.gate(path, purpose="catalog")
         hint = '{"catalog_name":"","products":[{"model":"","characteristics":[]}]}'
-        if self.should_use_vl(gate):
+        if self.should_use_vl(gate, path):
             return self.extract_vl_json(
                 path,
                 kind="catalog",
@@ -472,7 +561,7 @@ class QwenExtractor:
             '{"scope_summary":"","scope_items":[{"name":"","qty":1,"unit":"шт.",'
             '"requirements":[{"text":"","kind":"specs"}]}]}'
         )
-        if self.should_use_vl(gate):
+        if self.should_use_vl(gate, path):
             return self.extract_vl_json(
                 path,
                 kind="tender",

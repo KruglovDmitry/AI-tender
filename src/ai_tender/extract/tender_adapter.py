@@ -32,15 +32,15 @@ def _scope_has_detailed_list(scope_items: list[dict[str, Any]]) -> bool:
 
 
 TENDER_QWEN_PROMPT = """
-Ты аналитик закупок. По ПОЛНОМУ файлу тендерной документации извлеки:
+Ты аналитик закупок. По файлу тендерной документации извлеки ВСЕ позиции закупки.
 
-1) scope_summary — общий титул/предмет закупки (1–2 предложения), НЕ технические требования.
-2) scope_items — перечень позиций закупки (товары/работы/оборудование):
+1) scope_summary — общий титул/предмет закупки (1–2 предложения).
+2) scope_items — ПОЛНЫЙ перечень позиций (товары/работы/оборудование):
+   - все строки таблиц «Наименование / Ед. изм. / Кол-во»;
    - маркированные списки «– … – N шт.»;
-   - таблицы с колонками «Наименование», «Ед. изм.», «Кол-во» (извещения 223-ФЗ);
-   - даже одна позиция с qty — valid.
-3) requirements — для КАЖДОЙ позиции scope_items список требований из этого же файла
-   (характеристики, ГОСТ, параметры установки и т.п.), только относящиеся к этой позиции.
+   - НЕ ограничивай число позиций (не останавливайся на 50 или 100) — нужны ВСЕ строки.
+3) requirements — только если в той же строке/ячейке есть явные характеристики;
+   иначе оставь requirements: [].
 
 Верни JSON:
 {
@@ -51,10 +51,8 @@ TENDER_QWEN_PROMPT = """
       "qty": 1,
       "unit": "шт.",
       "confidence": 0.9,
-      "quote": "цитата строки",
-      "requirements": [
-        {"text": "...", "quote": "...", "kind": "specs|product|other", "priority": 2, "confidence": 0.9}
-      ]
+      "quote": "короткая цитата",
+      "requirements": []
     }
   ],
   "overall_confidence": 0.9,
@@ -63,10 +61,13 @@ TENDER_QWEN_PROMPT = """
 }
 
 Правила:
-- Не выдумывай позиции и требования — только из файла.
+- Не выдумывай позиции — только из файла.
 - «или эквивалент» включай в name как в документе.
 - Если перечень с qty найден — needs_more_docs=false.
 - Если только титул без позиций с qty — needs_more_docs=true, scope_items=[].
+- Приоритет: полнота списка позиций. Компактность важнее подробных требований.
+- quote ≤ 80 символов; requirements ≤ 2 на позицию; text ≤ 120 символов.
+- Не оборачивай ответ в markdown; один JSON-объект.
 """.strip()
 
 
@@ -92,14 +93,10 @@ def scope_item_to_dict(item: ScopeItemExtract, *, source_file: str) -> dict[str,
 def merge_scope_item_lists(
     existing: list[dict[str, Any]],
     new_items: list[dict[str, Any]],
-    *,
-    scope_max_items: int = 40,
 ) -> list[dict[str, Any]]:
     merged = [dict(i) for i in existing]
     by_name = {_norm_name(str(i.get("name") or "")): i for i in merged if i.get("name")}
     for raw in new_items:
-        if len(merged) >= scope_max_items:
-            break
         name = str(raw.get("name") or "").strip()
         if not name:
             continue
@@ -120,11 +117,10 @@ def tender_result_to_scope(
     result: TenderExtractResult,
     *,
     source_file: str,
-    scope_max_items: int = 40,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     scope_items = [
         scope_item_to_dict(item, source_file=source_file)
-        for item in result.scope_items[:scope_max_items]
+        for item in result.scope_items
         if item.name.strip()
     ]
     needs_more = bool(result.needs_more_docs)

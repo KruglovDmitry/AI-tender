@@ -7,6 +7,7 @@ from ai_tender.services.upload_service import (
     prepare_upload_dir,
     replace_shared_assets,
     safe_filename,
+    safe_relative_path,
 )
 
 
@@ -21,6 +22,27 @@ class _FakeUpload:
 
 def test_safe_filename_strips_path() -> None:
     assert safe_filename(r"..\evil\doc.pdf") == "doc.pdf"
+
+
+def test_safe_relative_path_keeps_nested() -> None:
+    assert safe_relative_path("docs/tz/a.pdf") == Path("docs") / "tz" / "a.pdf"
+
+
+def test_safe_relative_path_rejects_traversal() -> None:
+    try:
+        safe_relative_path("../evil.pdf")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_prepare_upload_dir_keeps_relative_structure(tmp_path: Path) -> None:
+    dest = tmp_path / "tender"
+    prepare_upload_dir(
+        [_FakeUpload("pack/docs/a.txt", b"hello")],
+        dest,
+    )
+    assert (dest / "pack" / "docs" / "a.txt").read_bytes() == b"hello"
 
 
 def test_prepare_upload_dir_saves_and_unpacks_zip(tmp_path: Path) -> None:

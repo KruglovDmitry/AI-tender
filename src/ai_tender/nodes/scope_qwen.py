@@ -35,7 +35,7 @@ def extract_scope_qwen_from_file(
     extractor = build_qwen_extractor(settings)
     gate = extractor.gate(path, purpose="tender")
     result = extractor.extract_tender(path, prompt=TENDER_QWEN_PROMPT)
-    route = "qwen_scan" if extractor.should_use_vl(gate) else str(gate.route)
+    route = "qwen_scan" if extractor.should_use_vl(gate, path) else str(gate.route)
     trace_note(
         "extract_scope_qwen",
         f"Qwen tender: {Path(relative_label).name}",

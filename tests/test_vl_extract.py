@@ -22,6 +22,21 @@ def test_should_use_vl_when_enabled_for_text_pdf() -> None:
     assert ex.should_use_vl(doc) is True
 
 
+def test_should_skip_vl_for_large_text_pdf(tmp_path: Path) -> None:
+    import fitz
+
+    pdf = tmp_path / "big.pdf"
+    doc = fitz.open()
+    for _ in range(20):
+        doc.new_page()
+    doc.save(pdf)
+    doc.close()
+
+    ex = QwenExtractor(cache_dir=Path("data/cache"), vl_enabled=True)
+    gate = GateDecision(True, ExtractRoute.qwen_doc, "ok")
+    assert ex.should_use_vl(gate, pdf) is False
+
+
 def test_merge_catalog_dedupes_by_model() -> None:
     merged = _merge_catalog_results(
         [

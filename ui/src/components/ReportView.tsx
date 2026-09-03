@@ -169,7 +169,61 @@ export function ReportView({ report }: { report: AnalysisReport }) {
                 Выбор файлов тендера (
                 {Array.isArray(docSel.loaded) ? docSel.loaded.length : 0} загружено)
               </summary>
-              <p className={`mt-3 ${mutedTextClass}`}>Режим: {String(docSel.mode || "—")}</p>
+              <p className={`mt-3 ${mutedTextClass}`}>
+                Режим: {String(docSel.mode || "—")}
+                {typeof docSel.catalog_count === "number"
+                  ? ` · в каталоге ${docSel.catalog_count}`
+                  : ""}
+              </p>
+              {Array.isArray(docSel.loaded) && docSel.loaded.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-sm font-medium text-gray-800">Загружено в анализ</p>
+                  <ul className="mt-1 list-inside list-disc space-y-1 text-sm text-gray-700">
+                    {docSel.loaded.map((label, i) => (
+                      <li key={`loaded-${i}`}>{String(label)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {Array.isArray(docSel.selected) && docSel.selected.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-sm font-medium text-gray-800">Выбрано LLM</p>
+                  <ul className="mt-1 space-y-2 text-sm text-gray-700">
+                    {docSel.selected.map((item, i) => {
+                      const row = item as Record<string, unknown>;
+                      const path = String(row.path || "—");
+                      const role = row.role ? String(row.role) : "";
+                      const reason = row.reason ? String(row.reason) : "";
+                      return (
+                        <li key={`sel-${i}`} className="rounded-md bg-gray-50 px-3 py-2">
+                          <div className="font-medium text-gray-900">{path}</div>
+                          {(role || reason) && (
+                            <div className={mutedTextClass}>
+                              {[role, reason].filter(Boolean).join(" · ")}
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+              {Array.isArray(docSel.skipped) && docSel.skipped.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-sm font-medium text-gray-800">Пропущено</p>
+                  <ul className="mt-1 list-inside list-disc space-y-1 text-sm text-gray-600">
+                    {docSel.skipped.map((item, i) => {
+                      const row = item as Record<string, unknown>;
+                      return (
+                        <li key={`skip-${i}`}>
+                          {String(row.path || "—")}
+                          {row.reason ? ` — ${String(row.reason)}` : ""}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
             </details>
           )}
 

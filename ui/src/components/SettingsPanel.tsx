@@ -6,7 +6,6 @@ import {
   btnGroupClass,
   btnGroupItemActiveClass,
   btnGroupItemClass,
-  inputClass,
   labelClass,
   mutedTextClass,
   selectClass,
@@ -17,8 +16,7 @@ export interface SettingsState {
   vlEnabled: boolean;
   maxReqs: number;
   assetsPath: string;
-  tenderPath: string;
-  tenderSource: "upload" | "folder";
+  tenderSource: "upload" | "folder" | "url";
   reportDownloadFormat: "md" | "json";
 }
 
@@ -38,7 +36,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     vlEnabled: true,
     maxReqs: 10,
     assetsPath: "",
-    tenderPath: "",
     tenderSource: "upload",
     reportDownloadFormat: "md",
   });
@@ -54,7 +51,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         vlEnabled: cfg.vl_enabled,
         maxReqs: cfg.max_reqs_per_scope_item,
         assetsPath: cfg.default_assets_path,
-        tenderPath: cfg.default_tender_path,
       }));
       setVlOk(vl.ok);
       setVlHint(vl.hint);
@@ -109,22 +105,25 @@ export function SettingsPanel() {
             >
               Папка
             </button>
+            <button
+              type="button"
+              className={
+                settings.tenderSource === "url"
+                  ? `${btnGroupItemActiveClass} flex-1`
+                  : `${btnGroupItemClass} flex-1`
+              }
+              onClick={() => setSettings((s) => ({ ...s, tenderSource: "url" }))}
+            >
+              Ссылка
+            </button>
           </div>
+          <p className={`mt-1.5 ${mutedTextClass}`}>
+            {settings.tenderSource === "upload" && "При старте откроется выбор файлов."}
+            {settings.tenderSource === "folder" && "При старте откроется выбор папки на ПК."}
+            {settings.tenderSource === "url" &&
+              "При старте можно вставить ссылку — VL скачает документы."}
+          </p>
         </div>
-
-        {settings.tenderSource === "folder" && (
-          <div>
-            <label className={labelClass} htmlFor="tender-path">
-              Папка с документами тендера
-            </label>
-            <input
-              id="tender-path"
-              className={inputClass}
-              value={settings.tenderPath}
-              onChange={(e) => setSettings((s) => ({ ...s, tenderPath: e.target.value }))}
-            />
-          </div>
-        )}
 
         <div
           className="flex items-center gap-2"

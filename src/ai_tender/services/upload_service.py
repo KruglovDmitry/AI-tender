@@ -27,6 +27,17 @@ def safe_filename(name: str) -> str:
     return base
 
 
+def safe_relative_path(name: str) -> Path:
+    """Безопасный относительный путь (поддержка выбора папки из браузера)."""
+    cleaned = name.replace("\\", "/").strip().lstrip("/")
+    if not cleaned or cleaned in {".", ".."}:
+        raise ValueError(f"Некорректное имя файла: {name!r}")
+    parts = [part for part in cleaned.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Некорректный путь загрузки: {name!r}")
+    return Path(*parts)
+
+
 def new_run_dir(kind: str, root: Path = UPLOADS_ROOT) -> Path:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     path = root / f"{stamp}_{kind}_{uuid.uuid4().hex[:8]}"
@@ -36,10 +47,16 @@ def new_run_dir(kind: str, root: Path = UPLOADS_ROOT) -> Path:
 
 def save_uploaded_files(files: list[UploadedLike], dest: Path) -> list[Path]:
     dest.mkdir(parents=True, exist_ok=True)
+    dest_resolved = dest.resolve()
     saved: list[Path] = []
     for item in files:
-        name = safe_filename(item.name)
-        target = dest / name
+        rel = safe_relative_path(item.name)
+        target = (dest / rel).resolve()
+        try:
+            target.relative_to(dest_resolved)
+        except ValueError as exc:
+            raise ValueError(f"Небезопасный путь загрузки: {item.name!r}") from exc
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(item.getvalue())
         saved.append(target)
     return saved

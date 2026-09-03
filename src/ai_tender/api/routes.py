@@ -288,6 +288,7 @@ async def start_analyze(
     max_reqs_per_scope_item: Annotated[int, Form()] = 10,
     tender_source: Annotated[str, Form()] = "upload",
     tender_folder: Annotated[str, Form()] = "",
+    tender_url: Annotated[str, Form()] = "",
     assets_path: Annotated[str, Form()] = "",
     files: Annotated[list[UploadFile] | None, File()] = None,
 ) -> JobResponse:
@@ -311,6 +312,8 @@ async def start_analyze(
 
     if tender_source == "upload" and not files:
         raise HTTPException(status_code=400, detail="Загрузите файлы тендера")
+    if tender_source == "url" and not tender_url.strip():
+        raise HTTPException(status_code=400, detail="Укажите URL тендера")
 
     upload_payloads: list[tuple[str, bytes]] = []
     if files:
@@ -344,6 +347,16 @@ async def start_analyze(
             tender_path, upload_warnings = prepare_upload_dir(
                 uploads,
                 run_dir / "tender",
+            )
+        elif tender_source == "url":
+            from ..services.tender_fetch import fetch_tender_from_url
+
+            run_dir = new_run_dir("tender")
+            tender_path, upload_warnings = fetch_tender_from_url(
+                tender_url.strip(),
+                run_dir / "tender",
+                settings=runtime_settings,
+                progress=progress,
             )
         else:
             tender_path = Path(tender_folder or default_tender_path()).expanduser()
