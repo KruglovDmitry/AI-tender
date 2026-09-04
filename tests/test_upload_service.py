@@ -5,7 +5,6 @@ from ai_tender.services.upload_service import (
     append_uploaded_files,
     cleanup_old_uploads,
     prepare_upload_dir,
-    replace_shared_assets,
     safe_filename,
     safe_relative_path,
 )
@@ -92,16 +91,6 @@ def test_expand_top_level_archives_cleans_failed_dest(tmp_path: Path, monkeypatc
     assert warnings
     assert archive.exists()
     assert not (dest / "bad").exists()
-
-
-def test_replace_shared_assets_clears_previous(tmp_path: Path) -> None:
-    assets = tmp_path / "assets"
-    assets.mkdir()
-    (assets / "old.pdf").write_bytes(b"%PDF-1.1 old")
-
-    replace_shared_assets([_FakeUpload("new.pdf", b"%PDF-1.1 new")], assets)
-    assert not (assets / "old.pdf").exists()
-    assert (assets / "new.pdf").read_bytes() == b"%PDF-1.1 new"
 
 
 def test_append_uploaded_files_keeps_existing(tmp_path: Path) -> None:

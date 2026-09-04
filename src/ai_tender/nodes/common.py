@@ -47,8 +47,6 @@ def load_labels(state: PipelineState, labels: list[str]) -> tuple[list[Document]
         corpus="tender",
         inventory=state.get("inventory"),
         only_labels=set(labels),
-        ocr_enabled=False,
-        ocr_languages="rus+eng",
     )
     return docs, warns
 

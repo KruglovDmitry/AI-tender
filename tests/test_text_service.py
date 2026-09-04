@@ -1,30 +1,5 @@
-from llama_index.core import Document
-
-from ai_tender.services.text_service import (
-    dedupe_requirements,
-    make_requirement,
-    merge_documents_by_file,
-    numbered_excerpt,
-)
+from ai_tender.services.text_service import dedupe_requirements, make_requirement
 from ai_tender.models import ExtractedRequirement
-
-
-def test_merge_documents_by_file_joins_pages() -> None:
-    docs = [
-        Document(text="стр1", metadata={"file_path": "a.pdf", "page_number": 1}),
-        Document(text="стр2", metadata={"file_path": "a.pdf", "page_number": 2}),
-        Document(text="другой", metadata={"file_path": "b.docx"}),
-    ]
-    merged = merge_documents_by_file(docs)
-    by_label = {label: text for label, text, _ in merged}
-    assert "стр1" in by_label["a.pdf"] and "стр2" in by_label["a.pdf"]
-    assert by_label["b.docx"] == "другой"
-
-
-def test_numbered_excerpt_keeps_line_prefixes() -> None:
-    text = numbered_excerpt("первая\nвторая", max_chars=1000)
-    assert text.startswith("1|первая")
-    assert "2|вторая" in text
 
 
 def test_make_requirement_strips_line_prefix_from_quote() -> None:

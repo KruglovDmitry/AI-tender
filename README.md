@@ -11,7 +11,7 @@ LlamaIndex RAG для оценки применимости эталонной �
 4. По эталону идёт **hybrid retrieval** (vector + BM25): «это требование ↔ какие фрагменты эталона».
 5. Пары отдаются в LLM с пользовательской инструкцией; в UI показываются только
    наиболее значимые совпадения и короткое резюме по счётчикам статусов.
-6. PDF без текстового слоя: при включённом OCR распознаются через Tesseract (медленнее).
+6. PDF без текстового слоя обрабатываются через VL (Qwen).
 7. RAR: нужен WinRAR (UnRAR) или 7-Zip; путь можно задать через `UNRAR_TOOL`.
 
 ## Запуск в Docker (Windows, одной кнопкой)
@@ -82,25 +82,21 @@ ai-tender-api
 - `AI_TENDER_LLM_PROVIDER` / `AI_TENDER_LLM_MODEL` (по умолчанию `qwen` / `qwen-plus`)
 - `AI_TENDER_MAX_TENDER_FILES_INITIAL` / `AI_TENDER_MAX_TENDER_FILES_TOTAL`
 - `AI_TENDER_MAX_REQS_PER_SCOPE_ITEM`
-- при необходимости: `UNRAR_TOOL`, `TESSERACT_CMD`
+- при необходимости: `UNRAR_TOOL`
 
 Остальные параметры (эмбеддинги, chunk size, top-k, cache) имеют значения по умолчанию в коде.
 
-### RAR и OCR (Windows)
+### RAR (Windows)
 
 ```powershell
 # RAR — обычно хватает установленного WinRAR; иначе:
 $env:UNRAR_TOOL = "C:\Program Files\WinRAR\UnRAR.exe"
-
-# OCR — установите Tesseract с языками rus+eng:
-# https://github.com/UB-Mannheim/tesseract/wiki
-$env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
 ```
 
 ## Ограничения
 
 - Высокий retrieval score ≠ юридическое соответствие; финальную оценку даёт LLM по цитатам.
-- PDF без текста: включите OCR и установите Tesseract (rus+eng).
+- PDF без текста обрабатываются через VL (Qwen), не через локальный OCR.
 - RAR без WinRAR/7-Zip не распакуется — см. `UNRAR_TOOL`.
 - Legacy `.doc` читается через `sharepoint-to-text` (локально) или `antiword` (Docker/Linux).
 - Фрагменты уходят в выбранный LLM API — учитывайте политику данных.

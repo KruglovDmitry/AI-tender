@@ -1,4 +1,4 @@
-"""Загрузка документов: архивы + LlamaIndex SimpleDirectoryReader + OCR + .doc."""
+"""Загрузка документов: архивы + LlamaIndex SimpleDirectoryReader + .doc."""
 
 from __future__ import annotations
 
@@ -9,10 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from llama_index.core import Document, SimpleDirectoryReader
-from llama_index.core.node_parser import SentenceSplitter
 
 from .archive_service import ARCHIVES, expand_archives
-from .ocr_service import extract_pdf_with_ocr, ocr_status
 
 # Форматы, которые SimpleDirectoryReader читает через llama-index-readers-file.
 SUPPORTED_SUFFIXES = {
@@ -101,8 +99,6 @@ def load_documents(
     technical_only: bool = False,
     only_labels: set[str] | None = None,
     inventory: TenderInventory | None = None,
-    ocr_enabled: bool = True,
-    ocr_languages: str = "rus+eng",
 ) -> tuple[list[Document], list[str]]:
     owns_inventory = inventory is None
     if inventory is None:
@@ -139,15 +135,7 @@ def load_documents(
             warnings.append(f"Формат пропущен: {label}")
 
         if reader_files:
-            documents.extend(
-                _load_with_llamaindex(
-                    reader_files,
-                    corpus,
-                    warnings,
-                    ocr_enabled=ocr_enabled,
-                    ocr_languages=ocr_languages,
-                )
-            )
+            documents.extend(_load_with_llamaindex(reader_files, corpus, warnings))
         if legacy_doc_files:
             documents.extend(_load_legacy_doc_files(legacy_doc_files, corpus, warnings))
     finally:
@@ -161,15 +149,11 @@ def _load_with_llamaindex(
     files: list[tuple[Path, str]],
     corpus: str,
     warnings: list[str],
-    ocr_enabled: bool = True,
-    ocr_languages: str = "rus+eng",
 ) -> list[Document]:
     documents: list[Document] = []
     label_by_name: dict[str, list[str]] = {}
-    path_by_label: dict[str, Path] = {}
     for path, label in files:
         label_by_name.setdefault(path.name, []).append(label)
-        path_by_label[label] = path
 
     try:
         reader = SimpleDirectoryReader(
@@ -216,54 +200,16 @@ def _load_with_llamaindex(
         else:
             empty_counts[label] = empty_counts.get(label, 0) + 1
 
-    ocr_available, ocr_hint = ocr_status()
-    ocr_hint_shown = False
     expected = {label for _, label in files}
-
-    # OCR для PDF без текстового слоя: пустые страницы ИЛИ файл вовсе не попал в load.
-    ocr_candidates = {
-        label
-        for label in expected
-        if label not in kept_labels
-        and path_by_label.get(label) is not None
-        and path_by_label[label].suffix.lower() == ".pdf"
-    }
-
-    for label in sorted(ocr_candidates):
-        path = path_by_label[label]
-        if ocr_enabled:
-            ocr_docs, note = extract_pdf_with_ocr(
-                path,
-                label,
-                corpus=corpus,
-                languages=ocr_languages,
-            )
-            if ocr_docs:
-                documents = [doc for doc in documents if doc.metadata.get("file_path") != label]
-                documents.extend(ocr_docs)
-                kept_labels.add(label)
-                if note:
-                    warnings.append(note)
-                continue
-            if note and not ocr_hint_shown:
-                warnings.append(f"OCR недоступен: {note}")
-                ocr_hint_shown = True
-        elif not ocr_hint_shown and not ocr_available:
-            warnings.append(f"OCR недоступен: {ocr_hint}")
-            ocr_hint_shown = True
-
+    for label in sorted(expected - kept_labels):
         count = empty_counts.get(label, 0)
         if count:
             warnings.append(
-                f"Нет текстового слоя (нужен OCR): {label} "
+                f"Нет текстового слоя (нужен VL): {label} "
                 f"({count} стр./фрагментов без текста)"
             )
         else:
-            warnings.append(f"Файл не попал в индекс (нужен OCR): {label}")
-
-    missing = expected - kept_labels - ocr_candidates
-    for label in sorted(missing):
-        warnings.append(f"Файл не попал в индекс (не прочитан): {label}")
+            warnings.append(f"Файл не попал в индекс (не прочитан): {label}")
 
     return documents
 
@@ -337,63 +283,3 @@ def _load_legacy_doc_files(
         else:
             warnings.append(f"Пустой .doc: {label}")
     return documents
-
-
-def split_documents(
-    documents: list[Document],
-    chunk_size: int,
-    chunk_overlap: int,
-):
-    splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    return splitter.get_nodes_from_documents(documents)
-
-
-def join_first_pages(
-    docs: list[Document],
-    *,
-    max_pages: int,
-    max_chars: int,
-) -> str:
-    """Склеивает текст первых страниц/фрагментов из LlamaIndex Documents."""
-    if not docs:
-        return ""
-
-    def page_key(doc: Document) -> int:
-        meta = doc.metadata or {}
-        raw = meta.get("page_number")
-        if raw is None:
-            raw = meta.get("page_label")
-        try:
-            return int(str(raw).strip())
-        except (TypeError, ValueError):
-            return 10**9
-
-    ordered = sorted(docs, key=page_key)
-    # Если page_number нет — просто первые max_pages документов.
-    if all(page_key(d) == 10**9 for d in ordered):
-        ordered = docs[:max_pages]
-    else:
-        seen_pages: set[int] = set()
-        picked: list[Document] = []
-        for doc in ordered:
-            p = page_key(doc)
-            if p in seen_pages:
-                continue
-            seen_pages.add(p)
-            picked.append(doc)
-            if len(picked) >= max_pages:
-                break
-        ordered = picked
-
-    parts: list[str] = []
-    for doc in ordered:
-        body = (doc.text or "").strip()
-        if not body:
-            continue
-        loc = str((doc.metadata or {}).get("location") or "").strip()
-        if loc:
-            parts.append(f"--- {loc} ---\n{body}")
-        else:
-            parts.append(body)
-    text = "\n\n".join(parts).strip()
-    return text[:max_chars] if len(text) > max_chars else text

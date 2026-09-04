@@ -14,19 +14,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     RUNNING_IN_DOCKER=1 \
     UNRAR_TOOL=/usr/bin/unrar-free \
-    SEVEN_ZIP_CMD=/usr/bin/7z \
-    TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata \
-    TESSERACT_CMD=/usr/bin/tesseract
+    SEVEN_ZIP_CMD=/usr/bin/7z
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tesseract-ocr \
-    tesseract-ocr-rus \
-    tesseract-ocr-eng \
     p7zip-full \
     unrar-free \
     antiword \
-    && rm -rf /var/lib/apt/lists/* \
-    && tesseract --list-langs
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

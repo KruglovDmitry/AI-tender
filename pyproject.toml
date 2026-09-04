@@ -22,7 +22,6 @@ dependencies = [
   "pydantic-settings",
   "python-dotenv",
   "pymupdf",
-  "pytesseract",
   "pillow",
   "rarfile",
   "sentence-transformers",

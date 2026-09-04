@@ -141,20 +141,6 @@ def prepare_upload_dir(files: list[UploadedLike], dest: Path) -> tuple[Path, lis
     return dest, warnings
 
 
-def replace_shared_assets(
-    files: list[UploadedLike],
-    assets_root: Path,
-) -> tuple[Path, list[str]]:
-    """Полностью заменяет содержимое каталога эталонов загруженным пакетом."""
-    dest, warnings = prepare_upload_dir(files, assets_root.expanduser().resolve())
-    _keep_only_allowed_suffixes(dest, ASSETS_ALLOWED_SUFFIXES, warnings)
-    if not any(path.is_file() for path in dest.rglob("*")):
-        raise ValueError(
-            "После загрузки не осталось PDF-файлов эталонов."
-        )
-    return dest, warnings
-
-
 def append_uploaded_files(
     files: list[UploadedLike],
     assets_root: Path,
@@ -222,18 +208,6 @@ def append_uploaded_files(
                 changed.append(name)
 
     return assets_root, warnings, sorted(set(changed))
-
-
-def list_files_relative(folder: Path, limit: int = 50) -> list[str]:
-    paths = sorted(
-        path.relative_to(folder).as_posix()
-        for path in folder.rglob("*")
-        if path.is_file()
-    )
-    if len(paths) > limit:
-        rest = len(paths) - limit
-        return paths[:limit] + [f"… и ещё {rest}"]
-    return paths
 
 
 def cleanup_old_uploads(
