@@ -78,11 +78,10 @@ ai-tender-api
 
 См. `.env.example`. Обычно достаточно:
 
-- `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`
-- `AI_TENDER_LLM_PROVIDER` / `AI_TENDER_LLM_MODEL`
+- `QWEN_API_KEY` / `DASHSCOPE_API_KEY`
+- `AI_TENDER_LLM_PROVIDER` / `AI_TENDER_LLM_MODEL` (по умолчанию `qwen` / `qwen-plus`)
 - `AI_TENDER_MAX_TENDER_FILES_INITIAL` / `AI_TENDER_MAX_TENDER_FILES_TOTAL`
 - `AI_TENDER_MAX_REQS_PER_SCOPE_ITEM`
-- `AI_TENDER_OCR_ENABLED` / `AI_TENDER_OCR_LANGUAGES`
 - при необходимости: `UNRAR_TOOL`, `TESSERACT_CMD`
 
 Остальные параметры (эмбеддинги, chunk size, top-k, cache) имеют значения по умолчанию в коде.

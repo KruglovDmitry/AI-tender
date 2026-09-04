@@ -298,17 +298,20 @@ async def start_analyze(
         raise HTTPException(status_code=400, detail="Каталог эталонов не существует")
 
     provider = settings.llm_provider.lower().strip()
-    if provider == "deepseek":
-        if not os.getenv("DEEPSEEK_API_KEY"):
-            raise HTTPException(status_code=400, detail="Не задан DEEPSEEK_API_KEY в окружении")
-    elif provider == "qwen":
+    if provider == "qwen":
         if not (os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")):
             raise HTTPException(
                 status_code=400,
                 detail="Не задан QWEN_API_KEY или DASHSCOPE_API_KEY в окружении",
             )
-    elif not os.getenv("OPENAI_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = "EMPTY"
+    elif provider == "openai":
+        if not os.getenv("OPENAI_API_KEY"):
+            os.environ["OPENAI_API_KEY"] = "EMPTY"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неизвестный LLM-провайдер: {provider!r}. Допустимо: qwen, openai.",
+        )
 
     if tender_source == "upload" and not files:
         raise HTTPException(status_code=400, detail="Загрузите файлы тендера")

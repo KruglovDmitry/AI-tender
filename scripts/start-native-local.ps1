@@ -20,7 +20,7 @@ foreach ($dir in @("sources", "assets", "data", "sources\1")) {
 
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
-    Write-Host "Created .env - set DEEPSEEK_API_KEY or OPENAI_API_KEY" -ForegroundColor Yellow
+    Write-Host "Created .env - set QWEN_API_KEY or DASHSCOPE_API_KEY" -ForegroundColor Yellow
 }
 
 Write-Host "Installing pywebview if needed..." -ForegroundColor Cyan

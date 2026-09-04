@@ -248,16 +248,6 @@ def _openai_like_llm(
 def build_llm(settings: Settings) -> LLM:
     provider = settings.llm_provider.lower().strip()
 
-    if provider == "openai":
-        from llama_index.llms.openai import OpenAI
-
-        return OpenAI(
-            model=settings.llm_model,
-            api_key=os.getenv("OPENAI_API_KEY") or "EMPTY",
-            api_base=settings.openai_base_url,
-            temperature=0,
-        )
-
     if provider == "qwen":
         api_key = dashscope_api_key()
         if not api_key:
@@ -268,12 +258,16 @@ def build_llm(settings: Settings) -> LLM:
             api_key=api_key,
         )
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not api_key:
-        raise ValueError("Не указан DEEPSEEK_API_KEY")
+    if provider == "openai":
+        from llama_index.llms.openai import OpenAI
 
-    return _openai_like_llm(
-        model=settings.llm_model,
-        api_base=settings.deepseek_base_url,
-        api_key=api_key,
+        return OpenAI(
+            model=settings.llm_model,
+            api_key=os.getenv("OPENAI_API_KEY") or "EMPTY",
+            api_base=settings.openai_base_url,
+            temperature=0,
+        )
+
+    raise ValueError(
+        f"Неизвестный LLM-провайдер: {provider!r}. Допустимо: qwen, openai."
     )

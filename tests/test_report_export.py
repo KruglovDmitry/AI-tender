@@ -7,7 +7,7 @@ def test_report_export_markdown_and_json() -> None:
         tender_path="/t",
         assets_path="/a",
         embedding_model="BAAI/bge-m3",
-        llm_model="deepseek-chat",
+        llm_model="qwen-plus",
         verdict="Подходит частично.",
         position_matches=[
             ScopePositionMatch(
@@ -33,5 +33,5 @@ def test_report_export_markdown_and_json() -> None:
     assert "Модель X" in md
 
     raw = report_to_json_bytes(report)
-    assert b"deepseek-chat" in raw
+    assert b"qwen-plus" in raw
     assert "Счётчик".encode("utf-8") in raw
