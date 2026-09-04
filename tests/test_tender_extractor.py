@@ -1,9 +1,5 @@
-from ai_tender.extract.schemas import RequirementRecord, ScopeItemExtract, TenderExtractResult
-from ai_tender.extract.tender_adapter import (
-    merge_scope_item_lists,
-    tender_result_to_requirements,
-    tender_result_to_scope,
-)
+from ai_tender.extract.tender_extractor import TenderExtractor
+from ai_tender.models import RequirementRecord, ScopeItemExtract, TenderExtractResult
 
 
 def test_tender_result_to_scope_and_requirements() -> None:
@@ -27,13 +23,13 @@ def test_tender_result_to_scope_and_requirements() -> None:
         overall_confidence=0.9,
         needs_more_docs=False,
     )
-    items, meta = tender_result_to_scope(result, source_file="tz.pdf")
+    items, meta = TenderExtractor.result_to_scope(result, source_file="tz.pdf")
     assert len(items) == 1
     assert items[0]["qty"] == 1
     assert meta["needs_more_docs"] is False
     assert meta["extraction_mode"] == "qwen_whole_file"
 
-    buckets = tender_result_to_requirements(
+    buckets = TenderExtractor.result_to_requirements(
         result,
         source_file="tz.pdf",
         scope_items=items,
@@ -45,7 +41,7 @@ def test_tender_result_to_scope_and_requirements() -> None:
 
 
 def test_merge_scope_items_by_name() -> None:
-    merged = merge_scope_item_lists(
+    merged = TenderExtractor.merge_scope_items(
         [{"name": "А", "qty": None}],
         [{"name": "а", "qty": 2, "unit": "шт."}],
     )

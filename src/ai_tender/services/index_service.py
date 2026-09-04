@@ -13,12 +13,10 @@ import numpy as np
 from llama_index.core import Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-from ..extract.catalog_adapter import CATALOG_QWEN_PROMPT, catalog_result_to_index
-from ..extract.qwen_extract import QwenExtractor
-from ..extract.qwen_settings import build_qwen_extractor
-from ..extract.schemas import CatalogExtractResult
+from ..extract.catalog_extractor import CatalogExtractor
 from ..models import (
     DOCUMENT_KIND_LABELS,
+    CatalogExtractResult,
     DocumentKind,
     IndexingContext,
     IndexingResult,
@@ -221,7 +219,7 @@ def _extract_file(
 
     warnings: list[str] = []
     custom: QwenCatalogFn | None = context.extra.get("qwen_catalog_extract")
-    extractor: QwenExtractor | None = context.extra.get("qwen_extractor")
+    extractor: CatalogExtractor | None = context.extra.get("qwen_extractor")
     settings: AppSettings | None = context.extra.get("settings")
 
     if custom is not None:
@@ -237,14 +235,14 @@ def _extract_file(
                 if callable(progress_cb):
                     progress_cb("vl", 0, 0, message)
 
-            extractor = build_qwen_extractor(settings, on_progress=_vl_progress)
-        gate = extractor.gate(path, purpose="catalog")
-        result = extractor.extract_catalog(path, prompt=CATALOG_QWEN_PROMPT)
+            extractor = CatalogExtractor.from_settings(settings, on_progress=_vl_progress)
+        gate = extractor.gate(path)
+        result = extractor.extract(path)
         warnings.append(
             f"Qwen catalog route={'qwen_scan' if extractor.should_use_vl(gate) else gate.route}"
         )
 
-    index = catalog_result_to_index(
+    index = CatalogExtractor.result_to_index(
         result,
         source_file=rel,
         doc_kind=DocumentKind.asset,

@@ -9,7 +9,7 @@ from typing import Any
 
 from llama_index.core.llms import LLM
 
-from .extract.qwen_extract import dashscope_api_key
+from .extract.base_extract import dashscope_api_key
 from .models import Settings
 
 

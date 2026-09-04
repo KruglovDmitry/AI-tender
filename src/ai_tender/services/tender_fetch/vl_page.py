@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from ...extract.qwen_extract import dashscope_api_key
+from ...extract.base_extract import dashscope_api_key
 from ...models import Settings
 from ...providers import try_parse_llm_json
 from .browser import PageCapture

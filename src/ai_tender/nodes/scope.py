@@ -4,15 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
-from ..extract.qwen_settings import build_qwen_extractor
-from ..extract.tender_adapter import (
-    TENDER_QWEN_PROMPT,
-    merge_requirements_buckets,
-    merge_scope_item_lists,
-    merge_scope_meta,
-    tender_result_to_requirements,
-    tender_result_to_scope,
-)
+from ..extract.tender_extractor import TenderExtractor
 from ..models import ExtractedRequirement, PipelineState, Settings
 from ..services.logging_service import trace_note
 from .load_next import next_unloaded
@@ -40,9 +32,9 @@ def extract_scope_from_file(
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[list[ExtractedRequirement]], list[str]]:
     """Один файл → Qwen whole-file (scope + requirements)."""
     warnings: list[str] = []
-    extractor = build_qwen_extractor(settings)
-    gate = extractor.gate(path, purpose="tender")
-    result = extractor.extract_tender(path, prompt=TENDER_QWEN_PROMPT)
+    extractor = TenderExtractor.from_settings(settings)
+    gate = extractor.gate(path)
+    result = extractor.extract(path)
     route = "qwen_scan" if extractor.should_use_vl(gate, path) else str(gate.route)
     trace_note(
         "extract_scope_qwen",
@@ -54,21 +46,21 @@ def extract_scope_from_file(
         },
     )
 
-    new_items, new_meta = tender_result_to_scope(
+    new_items, new_meta = TenderExtractor.result_to_scope(
         result,
         source_file=relative_label,
     )
-    scope_items = merge_scope_item_lists(existing_items, new_items)
-    scope_meta = merge_scope_meta(existing_meta, new_meta)
+    scope_items = TenderExtractor.merge_scope_items(existing_items, new_items)
+    scope_meta = TenderExtractor.merge_scope_meta(existing_meta, new_meta)
 
-    new_buckets = tender_result_to_requirements(
+    new_buckets = TenderExtractor.result_to_requirements(
         result,
         source_file=relative_label,
         scope_items=scope_items,
         max_per_item=settings.max_reqs_per_scope_item,
     )
     if existing_reqs and len(existing_reqs) == len(scope_items):
-        reqs = merge_requirements_buckets(
+        reqs = TenderExtractor.merge_requirements_buckets(
             existing_reqs,
             new_buckets,
             max_per_item=settings.max_reqs_per_scope_item,

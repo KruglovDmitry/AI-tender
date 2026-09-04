@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from ai_tender.extract.qwen_extract import dashscope_api_key
+from ai_tender.extract.base_extract import dashscope_api_key
 from ai_tender.graph import analyze
 from ai_tender.models import AnalysisReport, get_settings
 from ai_tender.services.index_service import (

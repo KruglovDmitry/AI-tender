@@ -7,7 +7,7 @@ from pathlib import Path
 import fitz
 import pytest
 
-from ai_tender.extract.schemas import CatalogExtractResult, ProductRecord
+from ai_tender.models import CatalogExtractResult, ProductRecord
 from ai_tender.models import DocumentKind, IndexingContext, IndexingStatus, Settings
 from ai_tender.services.index_service import index_asset_files, index_catalog_file
 from ai_tender.services.catalog_service import (
@@ -54,9 +54,9 @@ def _fake_qwen_catalog(path: Path) -> CatalogExtractResult:
 
 
 def test_qwen_catalog_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from ai_tender.extract import qwen_settings
+    from ai_tender.extract import base_extract
 
-    monkeypatch.setattr(qwen_settings, "dashscope_api_key", lambda: "test-key")
+    monkeypatch.setattr(base_extract, "dashscope_api_key", lambda: "test-key")
 
     assets = tmp_path / "assets"
     cache = tmp_path / "cache"
@@ -95,9 +95,9 @@ def test_qwen_catalog_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_index_asset_files_orchestrate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from ai_tender.extract import qwen_settings
+    from ai_tender.extract import base_extract
 
-    monkeypatch.setattr(qwen_settings, "dashscope_api_key", lambda: "test-key")
+    monkeypatch.setattr(base_extract, "dashscope_api_key", lambda: "test-key")
 
     assets = tmp_path / "assets"
     cache = tmp_path / "cache"
@@ -122,9 +122,9 @@ def test_index_asset_files_orchestrate(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_empty_qwen_extract_still_indexes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from ai_tender.extract import qwen_settings
+    from ai_tender.extract import base_extract
 
-    monkeypatch.setattr(qwen_settings, "dashscope_api_key", lambda: "test-key")
+    monkeypatch.setattr(base_extract, "dashscope_api_key", lambda: "test-key")
 
     assets = tmp_path / "assets"
     cache = tmp_path / "cache"

@@ -134,6 +134,49 @@ class ProductDocumentIndex(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# --- Qwen whole-file JSON (каталог / тендер) ---
+
+
+class ProductRecord(BaseModel):
+    model: str = ""
+    manufacturer: str = ""
+    category: str = ""
+    canonical_desc: str = ""
+    raw_chunk: str = ""
+    characteristics: list[str] = Field(default_factory=list)
+    standards: list[str] = Field(default_factory=list)
+
+
+class CatalogExtractResult(BaseModel):
+    catalog_name: str = ""
+    products: list[ProductRecord] = Field(default_factory=list)
+
+
+class RequirementRecord(BaseModel):
+    text: str
+    quote: str = ""
+    kind: str = "other"
+    priority: int = Field(default=2, ge=0, le=3)
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
+class ScopeItemExtract(BaseModel):
+    name: str
+    qty: float | int | None = None
+    unit: str = ""
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    quote: str = ""
+    requirements: list[RequirementRecord] = Field(default_factory=list)
+
+
+class TenderExtractResult(BaseModel):
+    scope_summary: str = ""
+    scope_items: list[ScopeItemExtract] = Field(default_factory=list)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    needs_more_docs: bool = False
+    missing_signals: str = ""
+
+
 DEFAULT_USER_INSTRUCTION = (
     "Эталон — каталог продукции, извлечённый Qwen whole-file (модель, характеристики). "
     "Тендер задаёт требования к закупке (часто чужой тип «или аналог»). "
@@ -215,13 +258,11 @@ class Settings(BaseSettings):
     # Whole-file извлечение Qwen DashScope (отдельно от match LLM).
     extract_backend: str = "qwen"
     qwen_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    # Whole-file extract: intl (Singapore) — qwen-plus + fileid://; Beijing — qwen-doc-turbo / qwen-long
+    # Text extract: local-text + chat model (intl: qwen-plus; VL отдельно).
     qwen_doc_model: str = "qwen-plus"
-    qwen_long_model: str = "qwen-long"
     qwen_vl_model: str = "qwen-vl-plus"
     qwen_vl_pages_per_call: int = 2
     qwen_vl_max_pages: int = 80
-    qwen_extract_schema_version: str = "3"
     qwen_max_file_mb: int = 150
 
 
