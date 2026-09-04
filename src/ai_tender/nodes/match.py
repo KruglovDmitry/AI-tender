@@ -1,5 +1,3 @@
-"""Match: retrieval по каталогу + Qwen JSON-вердикт + параллельная нода."""
-
 from __future__ import annotations
 
 import json
@@ -26,7 +24,6 @@ from ..services.catalog_retrieval import (
     search_catalog,
 )
 from ..services.logging_service import trace_note, trace_retrieval
-from .common import progress
 
 MAX_HITS_FOR_LLM = 12
 MAX_REQS_IN_QUERY = 8
@@ -155,20 +152,6 @@ def retrieve_hits_for_position(
     return hits[: max(top_k * 3, MAX_HITS_FOR_LLM)]
 
 
-def _base_match(
-    scope_item: dict[str, Any],
-    requirements: list[ExtractedRequirement],
-    asset_hits: list[Evidence],
-) -> ScopePositionMatch:
-    return ScopePositionMatch(
-        scope_name=str(scope_item.get("name") or "").strip(),
-        qty=_scope_qty(scope_item.get("qty")),
-        unit=str(scope_item.get("unit") or "").strip(),
-        requirements=list(requirements),
-        asset_hits=list(asset_hits[:MAX_HITS_FOR_LLM]),
-    )
-
-
 def _parse_llm_match(
     data: dict[str, Any],
     asset_hits: list[Evidence],
@@ -216,7 +199,13 @@ def match_scope_position(
     scope_name = str(scope_item.get("name") or "").strip()
     reqs = _rank_requirements(requirements)
     hits = asset_hits[:MAX_HITS_FOR_LLM]
-    result = _base_match(scope_item, reqs, hits)
+    result = ScopePositionMatch(
+        scope_name=scope_name,
+        qty=_scope_qty(scope_item.get("qty")),
+        unit=str(scope_item.get("unit") or "").strip(),
+        requirements=list(reqs),
+        asset_hits=list(hits),
+    )
 
     if not hits:
         result.status = PositionMatchStatus.none
@@ -302,27 +291,26 @@ def match_one_position(
     )
 
 
-def failed_position_match(
-    scope_item: dict[str, Any],
-    requirements: list[ExtractedRequirement],
-    *,
-    explanation: str,
-) -> ScopePositionMatch:
-    return ScopePositionMatch(
-        scope_name=str(scope_item.get("name") or "").strip() or "позиция",
-        qty=_scope_qty(scope_item.get("qty")),
-        unit=str(scope_item.get("unit") or "").strip(),
-        requirements=list(requirements),
-        status=PositionMatchStatus.none,
-        explanation=explanation,
-    )
-
-
 def node_match_positions(state: PipelineState) -> dict[str, Any]:
     settings: Settings = state["settings"]
     scope_items = list(state.get("scope_items") or [])
     reqs_by_item = list(state.get("requirements_by_item") or [])
     catalog = state.get("product_catalog")
+
+    def _failed(
+        scope_item: dict[str, Any],
+        requirements: list[ExtractedRequirement],
+        *,
+        explanation: str,
+    ) -> ScopePositionMatch:
+        return ScopePositionMatch(
+            scope_name=str(scope_item.get("name") or "").strip() or "позиция",
+            qty=_scope_qty(scope_item.get("qty")),
+            unit=str(scope_item.get("unit") or "").strip(),
+            requirements=list(requirements),
+            status=PositionMatchStatus.none,
+            explanation=explanation,
+        )
 
     if not scope_items:
         return {"position_matches": []}
@@ -330,7 +318,7 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
     if catalog is None or catalog.size == 0:
         return {
             "position_matches": [
-                failed_position_match(
+                _failed(
                     scope_items[i],
                     reqs_by_item[i] if i < len(reqs_by_item) else [],
                     explanation="Каталог эталонов не содержит продуктов для подбора.",
@@ -350,14 +338,16 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
     embed_device = settings.embedding_device
     total = len(scope_items)
 
-    progress(state, f"Подбор эталона: {total} позиций (workers={workers})", 0.72)
+    callback = state.get("progress")
+    if callable(callback):
+        callback(f"Подбор эталона: {total} позиций (workers={workers})", 0.72)
 
     def _run(index: int) -> tuple[int, ScopePositionMatch, str | None]:
         item = scope_items[index]
         reqs = reqs_by_item[index] if index < len(reqs_by_item) else []
         name = str(item.get("name") or "").strip() or f"позиция {index + 1}"
         try:
-            match = match_one_position(
+            pos_match = match_one_position(
                 llm=llm,
                 scope_item=item,
                 requirements=reqs,
@@ -367,7 +357,7 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
                 embedding_model=embed_model,
                 embedding_device=embed_device,
             )
-            return index, match, None
+            return index, pos_match, None
         except Exception as exc:
             trace_note(
                 "match_position_failed",
@@ -376,7 +366,7 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
             )
             return (
                 index,
-                failed_position_match(item, reqs, explanation=f"Не удалось подобрать эталон: {exc}"),
+                _failed(item, reqs, explanation=f"Не удалось подобрать эталон: {exc}"),
                 f"Match «{name}»: {exc}",
             )
 
@@ -391,7 +381,11 @@ def node_match_positions(state: PipelineState) -> dict[str, Any]:
             warnings.append(warning)
         done += 1
         label = str(scope_items[index].get("name") or "").strip() or f"позиция {index + 1}"
-        progress(state, f"Подбор эталона: {done}/{total} — {label[:60]}", 0.7 + 0.2 * done / total)
+        if callable(callback):
+            callback(
+                f"Подбор эталона: {done}/{total} — {label[:60]}",
+                0.7 + 0.2 * done / total,
+            )
 
     if workers == 1:
         for i in range(total):

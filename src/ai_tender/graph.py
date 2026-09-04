@@ -12,13 +12,10 @@ from .services.logging_service import clear_trace, start_trace
 from .models import AnalysisReport, PipelineState, ProgressCallback, Settings, get_settings
 from .nodes.load_catalog import node_load_catalog
 from .nodes.finalize import node_finalize
+from .nodes.load_next import node_load_next_scope_file
 from .nodes.match import node_match_positions
-from .nodes.scope import (
-    node_extract_scope,
-    node_load_next_scope_file,
-    route_after_scope,
-)
-from .nodes.select_files import node_select_files
+from .nodes.scope import node_extract_scope, route_after_scope
+from .nodes.select import node_select_files
 from .nodes.verdict import node_build_verdict
 from .providers import build_llm
 

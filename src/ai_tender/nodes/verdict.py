@@ -1,15 +1,10 @@
-"""Нода: итоговый вердикт по тендеру."""
-
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from llama_index.core.llms import LLM
-
-from ..models import PipelineState, PositionMatchStatus, ScopePositionMatch
+from ..models import PipelineState, PositionMatchStatus
 from ..providers import complete_llm_json
-from .common import progress
 
 
 VERDICT_SCHEMA_HINT = """
@@ -29,38 +24,26 @@ VERDICT_SCHEMA_HINT = """
 """.strip()
 
 
-def _heuristic_verdict(matches: list[ScopePositionMatch], covered: int) -> str:
-    ratio = covered / max(len(matches), 1)
-    if ratio >= 0.7:
-        return (
-            f"Тендер в целом подходит: закрыто {covered} из {len(matches)} позиций."
-        )
-    if ratio >= 0.4:
-        return (
-            f"Тендер подходит с оговорками: закрыто {covered} из {len(matches)} позиций."
-        )
-    return (
-        f"Тендер скорее не подходит: закрыто лишь {covered} из {len(matches)} позиций."
-    )
+def node_build_verdict(state: PipelineState) -> dict[str, Any]:
+    callback = state.get("progress")
+    if callable(callback):
+        callback("Итоговый вывод по тендеру", 0.92)
 
-
-def build_tender_verdict(
-    llm: LLM,
-    matches: list[ScopePositionMatch],
-    *,
-    scope_summary: str = "",
-) -> str:
-    """Итоговый вывод по тендеру отдельным запросом к LLM."""
+    matches = list(state.get("position_matches") or [])
     if not matches:
-        return "Перечень позиций пуст — вывод о пригодности тендера сформировать нельзя."
+        return {
+            "verdict": "Перечень позиций пуст — вывод о пригодности тендера сформировать нельзя."
+        }
 
     covered = sum(
         1
         for item in matches
         if item.status in (PositionMatchStatus.matched, PositionMatchStatus.partial)
     )
+    fallback = f"Закрыто {covered} из {len(matches)} позиций."
+    scope_meta = state.get("scope_meta") or {}
     payload = {
-        "scope_summary": scope_summary,
+        "scope_summary": str(scope_meta.get("scope_summary") or ""),
         "total_positions": len(matches),
         "covered_positions": covered,
         "positions": [
@@ -86,32 +69,21 @@ def build_tender_verdict(
     )
     try:
         data, _n_calls = complete_llm_json(
-            llm,
+            state["llm"],
             prompt,
             structure_hint=VERDICT_SCHEMA_HINT,
             trace_name="tender_verdict",
         )
     except Exception:
-        return _heuristic_verdict(matches, covered)
+        return {"verdict": fallback}
 
     if not data:
-        return _heuristic_verdict(matches, covered)
+        return {"verdict": fallback}
 
     verdict = str(data.get("verdict") or "").strip()
     label = str(data.get("label") or "").strip()
     if label and verdict:
-        return f"{label.capitalize()}. {verdict}"
+        return {"verdict": f"{label.capitalize()}. {verdict}"}
     if verdict:
-        return verdict
-    return _heuristic_verdict(matches, covered)
-
-
-def node_build_verdict(state: PipelineState) -> dict[str, Any]:
-    progress(state, "Итоговый вывод по тендеру", 0.92)
-    scope_meta = state.get("scope_meta") or {}
-    verdict = build_tender_verdict(
-        state["llm"],
-        list(state.get("position_matches") or []),
-        scope_summary=str(scope_meta.get("scope_summary") or ""),
-    )
-    return {"verdict": verdict}
+        return {"verdict": verdict}
+    return {"verdict": fallback}

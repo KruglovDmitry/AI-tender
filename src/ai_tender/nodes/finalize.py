@@ -1,11 +1,8 @@
-"""Нода: сборка метаданных результата."""
-
 from __future__ import annotations
 
 from typing import Any
 
 from ..models import PipelineState
-from .common import progress
 
 
 def node_finalize(state: PipelineState) -> dict[str, Any]:
@@ -47,14 +44,15 @@ def node_finalize(state: PipelineState) -> dict[str, Any]:
         },
     }
 
-    progress(
-        state,
-        (
-            f"Готово: позиций={len(position_matches)}, закрыто={covered}, "
-            f"требований={len(all_requirements)}"
-        ),
-        0.97,
-    )
+    callback = state.get("progress")
+    if callable(callback):
+        callback(
+            (
+                f"Готово: позиций={len(position_matches)}, закрыто={covered}, "
+                f"требований={len(all_requirements)}"
+            ),
+            0.97,
+        )
     return {
         "query_selection": query_selection,
         "verdict": verdict,

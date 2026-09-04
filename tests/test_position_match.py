@@ -2,13 +2,12 @@ from unittest.mock import MagicMock
 
 from ai_tender.nodes.scope import scope_has_detailed_list
 from ai_tender.models import Evidence, ExtractedRequirement, PositionMatchStatus, Product, ScopePositionMatch
-from ai_tender.nodes.common import cap_evidence_per_file, dedupe_evidence_by_file
 from ai_tender.nodes.match import (
     match_scope_position,
     position_to_query_text,
     product_name_in_hits,
 )
-from ai_tender.nodes.verdict import build_tender_verdict
+from ai_tender.nodes.verdict import node_build_verdict
 
 
 def test_scope_has_detailed_list() -> None:
@@ -16,29 +15,6 @@ def test_scope_has_detailed_list() -> None:
     assert not scope_has_detailed_list([{"name": "титул", "qty": None}])
     assert scope_has_detailed_list([{"name": "позиция А", "qty": 24}])
     assert scope_has_detailed_list([{"name": "a"}, {"name": "b"}])
-
-
-def test_dedupe_evidence_by_file() -> None:
-    hits = [
-        Evidence(file="a.pdf", location="1", quote="x", score=0.1),
-        Evidence(file="a.pdf", location="2", quote="y", score=0.9),
-        Evidence(file="b.pdf", location="1", quote="z", score=0.5),
-    ]
-    out = dedupe_evidence_by_file(hits)
-    assert len(out) == 2
-    assert out[0].quote == "y"
-    assert out[0].score == 0.9
-
-
-def test_cap_evidence_per_file_keeps_several_chunks() -> None:
-    hits = [
-        Evidence(file="a.pdf", location="1", quote="intro", score=0.9),
-        Evidence(file="a.pdf", location="2", quote="SR33020-6x9", score=0.8),
-        Evidence(file="a.pdf", location="3", quote="extra", score=0.7),
-        Evidence(file="b.pdf", location="1", quote="other", score=0.6),
-    ]
-    out = cap_evidence_per_file(hits, per_file=2, limit=4)
-    assert [h.quote for h in out] == ["intro", "SR33020-6x9", "other"]
 
 
 def test_position_to_query_text() -> None:
@@ -326,8 +302,15 @@ def test_build_tender_verdict_fallback_on_empty_text() -> None:
         ),
         ScopePositionMatch(scope_name="позиция B", status=PositionMatchStatus.none),
     ]
-    text = build_tender_verdict(llm, matches, scope_summary="тест")
-    assert "1 из 2" in text or "подходит" in text.lower()
+    out = node_build_verdict(
+        {
+            "llm": llm,
+            "position_matches": matches,
+            "scope_meta": {"scope_summary": "тест"},
+            "progress": None,
+        }
+    )
+    assert "1 из 2" in out["verdict"] or "подходит" in out["verdict"].lower()
 
 
 def test_build_tender_verdict_fallback_on_llm_error() -> None:
@@ -338,5 +321,5 @@ def test_build_tender_verdict_fallback_on_llm_error() -> None:
         ScopePositionMatch(scope_name="B", status=PositionMatchStatus.matched),
         ScopePositionMatch(scope_name="C", status=PositionMatchStatus.none),
     ]
-    text = build_tender_verdict(llm, matches)
-    assert "2 из 3" in text
+    out = node_build_verdict({"llm": llm, "position_matches": matches, "progress": None})
+    assert "2 из 3" in out["verdict"]
