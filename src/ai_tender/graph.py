@@ -10,7 +10,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .services.logging_service import clear_trace, start_trace
 from .models import AnalysisReport, PipelineState, ProgressCallback, Settings, get_settings
-from .nodes.build_index import node_build_assets_index
+from .nodes.load_catalog import node_load_catalog
 from .nodes.finalize import node_finalize
 from .nodes.match import node_match_positions
 from .nodes.scope import (
@@ -64,7 +64,7 @@ def build_graph():
     graph.add_node("select_files", node_select_files)
     graph.add_node("load_next_scope_file", node_load_next_scope_file)
     graph.add_node("extract_scope", node_extract_scope)
-    graph.add_node("build_assets_index", node_build_assets_index)
+    graph.add_node("load_catalog", node_load_catalog)
     graph.add_node("match_positions", node_match_positions)
     graph.add_node("build_verdict", node_build_verdict)
     graph.add_node("finalize", node_finalize)
@@ -77,10 +77,10 @@ def build_graph():
         route_after_scope,
         {
             "load_next_scope_file": "load_next_scope_file",
-            "build_assets_index": "build_assets_index",
+            "load_catalog": "load_catalog",
         },
     )
-    graph.add_edge("build_assets_index", "match_positions")
+    graph.add_edge("load_catalog", "match_positions")
     graph.add_edge("match_positions", "build_verdict")
     graph.add_edge("build_verdict", "finalize")
     graph.add_edge("finalize", END)

@@ -8,16 +8,16 @@ graph TD;
 	select_files(select_files)
 	load_next_scope_file(load_next_scope_file)
 	extract_scope(extract_scope)
-	build_assets_index(build_assets_index)
+	load_catalog(load_catalog)
 	match_positions(match_positions)
 	build_verdict(build_verdict)
 	finalize(finalize)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> select_files;
-	build_assets_index --> match_positions;
 	build_verdict --> finalize;
-	extract_scope -.-> build_assets_index;
+	extract_scope -.-> load_catalog;
 	extract_scope -.-> load_next_scope_file;
+	load_catalog --> match_positions;
 	load_next_scope_file --> extract_scope;
 	match_positions --> build_verdict;
 	select_files --> load_next_scope_file;

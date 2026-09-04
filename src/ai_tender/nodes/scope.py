@@ -93,7 +93,7 @@ def node_extract_scope(state: PipelineState) -> dict[str, Any]:
 
 def route_after_scope(
     state: PipelineState,
-) -> Literal["load_next_scope_file", "build_assets_index"]:
+) -> Literal["load_next_scope_file", "load_catalog"]:
     from .common import next_unloaded
 
     scope_items = state.get("scope_items") or []
@@ -103,4 +103,4 @@ def route_after_scope(
     )
     if needs_more and next_unloaded(state) is not None:
         return "load_next_scope_file"
-    return "build_assets_index"
+    return "load_catalog"

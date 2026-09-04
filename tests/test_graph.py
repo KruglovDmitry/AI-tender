@@ -26,8 +26,9 @@ def test_export_graph_diagram(tmp_path: Path) -> None:
     text = written["mermaid"].read_text(encoding="utf-8")
     assert "select_files" in text
     assert "extract_scope" in text
-    assert "build_assets_index" in text
+    assert "load_catalog" in text
     assert "match_positions" in text
+    assert "build_assets_index" not in text
     assert "load_next_requirement_file" not in text
     if "png" in written:
         assert written["png"].is_file()
@@ -67,7 +68,7 @@ def test_route_after_scope_goes_to_catalog_when_ready() -> None:
         "ranked_paths": ["a.pdf", "b.pdf"],
         "scope_queue": ["a.pdf"],
     }
-    assert route_after_scope(state) == "build_assets_index"
+    assert route_after_scope(state) == "load_catalog"
 
 
 def test_scope_has_detailed_list() -> None:

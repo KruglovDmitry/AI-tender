@@ -1,4 +1,4 @@
-"""Нода: загрузка каталога эталонов (Qwen product_json) для retrieval."""
+"""Нода: загрузка уже проиндексированного каталога эталонов для retrieval."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from ..services.catalog_retrieval import load_product_catalog
 from .common import progress
 
 
-def node_build_assets_index(state: PipelineState) -> dict[str, Any]:
+def node_load_catalog(state: PipelineState) -> dict[str, Any]:
     settings: Settings = state["settings"]
     progress(
         state,
