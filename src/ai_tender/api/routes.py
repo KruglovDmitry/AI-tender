@@ -14,9 +14,12 @@ from pydantic import BaseModel
 from ai_tender.extract.qwen_extract import dashscope_api_key
 from ai_tender.graph import analyze
 from ai_tender.models import AnalysisReport, get_settings
-from ai_tender.services.index_service import delete_asset_file, scan_assets_files
-from ai_tender.services.catalog_index import index_asset_files
-from ai_tender.services.catalog_persistence import (
+from ai_tender.services.index_service import (
+    delete_asset_file,
+    index_asset_files,
+    scan_assets_files,
+)
+from ai_tender.services.catalog_service import (
     catalog_is_indexed,
     load_product_index,
 )

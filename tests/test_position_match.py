@@ -235,7 +235,7 @@ def test_node_match_positions_parallel_preserves_order(monkeypatch) -> None:
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.partial)
 
     monkeypatch.setattr(match_mod, "match_one_position", fake_match_one)
-    from ai_tender.services.catalog_retrieval import ProductCatalog
+    from ai_tender.services.catalog_service import ProductCatalog
 
     settings = Settings(match_parallelism=4)
     state = {
@@ -273,7 +273,7 @@ def test_node_match_positions_isolates_errors(monkeypatch) -> None:
         return ScopePositionMatch(scope_name=name, status=PositionMatchStatus.matched)
 
     monkeypatch.setattr(match_mod, "match_one_position", fake_match_one)
-    from ai_tender.services.catalog_retrieval import ProductCatalog
+    from ai_tender.services.catalog_service import ProductCatalog
 
     settings = Settings(match_parallelism=2)
     state = {

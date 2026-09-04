@@ -9,8 +9,8 @@ import pytest
 
 from ai_tender.extract.schemas import CatalogExtractResult, ProductRecord
 from ai_tender.models import DocumentKind, IndexingContext, IndexingStatus, Settings
-from ai_tender.services.catalog_index import index_asset_files, index_catalog_file
-from ai_tender.services.catalog_persistence import (
+from ai_tender.services.index_service import index_asset_files, index_catalog_file
+from ai_tender.services.catalog_service import (
     delete_product_artifacts,
     json_path_for,
     load_product_embeddings,
@@ -121,7 +121,7 @@ def test_index_asset_files_orchestrate(tmp_path: Path, monkeypatch: pytest.Monke
     assert load_product_index(cache, "a.pdf") is not None
 
 
-def test_empty_qwen_extract_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_empty_qwen_extract_still_indexes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from ai_tender.extract import qwen_settings
 
     monkeypatch.setattr(qwen_settings, "dashscope_api_key", lambda: "test-key")
@@ -148,6 +148,8 @@ def test_empty_qwen_extract_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     result = index_catalog_file(
         assets / "empty.pdf", relative_path="empty.pdf", context=ctx
     )
-    assert result.status == IndexingStatus.failed
+    assert result.status == IndexingStatus.indexed
     assert result.details["product_count"] == 0
-    assert load_product_index(cache, "empty.pdf") is None
+    index = load_product_index(cache, "empty.pdf")
+    assert index is not None
+    assert index.products == []

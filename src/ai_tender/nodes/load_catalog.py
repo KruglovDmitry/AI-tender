@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import PipelineState, Settings
-from ..services.catalog_retrieval import load_product_catalog
+from ..services.catalog_service import load_product_catalog
 
 
 def node_load_catalog(state: PipelineState) -> dict[str, Any]:

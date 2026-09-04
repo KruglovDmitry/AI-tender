@@ -16,7 +16,7 @@ from ..models import (
     Settings,
 )
 from ..providers import complete_llm_json
-from ..services.catalog_retrieval import (
+from ..services.catalog_service import (
     CatalogProductHit,
     ProductCatalog,
     catalog_hit_to_evidence,

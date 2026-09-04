@@ -1,7 +1,7 @@
 import numpy as np
 
 from ai_tender.models import Product, ProductSource
-from ai_tender.services.catalog_retrieval import (
+from ai_tender.services.catalog_service import (
     ProductCatalog,
     catalog_hit_to_evidence,
     embedding_text,
@@ -54,7 +54,7 @@ def test_search_catalog_returns_top_by_cosine(monkeypatch) -> None:
         return np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
     monkeypatch.setattr(
-        "ai_tender.services.catalog_retrieval.embed_query",
+        "ai_tender.services.catalog_service.embed_query",
         fake_embed,
     )
 
@@ -81,7 +81,7 @@ def test_keyword_overlap_finds_analogue_in_characteristics() -> None:
 
 
 def test_catalog_hit_to_evidence_contains_model() -> None:
-    from ai_tender.services.catalog_retrieval import CatalogProductHit
+    from ai_tender.services.catalog_service import CatalogProductHit
 
     product = Product(
         id="x",

@@ -7,7 +7,7 @@ from ai_tender.services.index_service import (
     file_fingerprint,
     scan_assets_files,
 )
-from ai_tender.services.catalog_persistence import (
+from ai_tender.services.catalog_service import (
     delete_product_artifacts,
     json_path_for,
     load_product_index,
